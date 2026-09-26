@@ -16,6 +16,14 @@ Yearly Calendar    all twelve months of a year at a glance
 Projects           longer-term work in nested folders, with version history
 ```
 
+## Known issues
+
+On Windows, 7 of the 40 test suites currently fail; this is under
+investigation. In particular, **setting up database or backup encryption
+may fail on Windows, so Windows users should not set it up yet.** The
+calendar (`.ics`) export and some layouts at large interface font sizes
+are also affected. On Linux all suites pass.
+
 **Drag a tab to put the workspaces in whatever order you like.** The order
 is remembered between sessions. It is a display preference and nothing
 else — it changes no entry, project, event or task. (Daily Jorts was
@@ -57,9 +65,8 @@ What is deliberately *not* renamed: identifiers that hold data — the
 database's table and column names, settings keys and migration flags —
 because renaming them would make existing data unreadable for no benefit.
 
-Built with Python + PySide6 (Qt) — the same kind of stack as your other
-tools (the electrical plotter, the Japanese trainer) — so you can freely
-read or modify the code later.
+Built with Python + PySide6 (Qt), so the code is straightforward to read
+and modify.
 
 ## The Daily Jorts screen
 
@@ -157,10 +164,10 @@ dividers between them:
   Everything snaps to 15 minutes, overlapping events are laid out
   side-by-side automatically, and when you're looking at today a red line
   marks the current time. Anything genuinely untimed sits in a strip above
-  the timeline — the same strip the Weekly Schedule uses (see below) — which
-  is where your existing tasks went: every one of them was converted into an
-  untimed event on its own date, rather than being given an invented start
-  time.
+  the timeline — the same strip the Weekly Schedule uses (see below). When
+  the old Daily Tasks checklist was retired, each of its tasks was converted
+  into an untimed event on its own date, rather than being given an invented
+  start time.
 
   **Above the calendar is the ToDo list** for that day, when there is one.
   It is a separate thing from a calendar event, and it has its own section
@@ -494,7 +501,9 @@ it drops in at your cursor; double-click any inline photo to view it at
 full resolution.
 
 Under the hood, each entry/project just stores a relative reference to the
-image file (standard Markdown `![]()` syntax), and the editor
+image file — an ordinary HTML `<img src="…">` tag whose path is relative
+to the `attachments/` folder (entries still in the older Markdown format
+use Markdown's `![](…)` syntax for the same thing) — and the editor
 automatically shows a reasonably-sized version inline — you're never
 looking at an unscaled 12-megapixel photo squeezed into your journal. The
 original file on disk is never modified or resized, so "view full size"
@@ -536,7 +545,7 @@ nothing to save.
 python tests/run_all.py
 ```
 
-24 suites, each a standalone script you can also run on its own. They build
+40 suites, each a standalone script you can also run on its own. They build
 real widgets against a throwaway data directory — never your journal — and
 several of them drive real mouse and key events, because the thing worth
 testing about a drag is that it's actually wired to the mouse. On Linux the
@@ -545,18 +554,20 @@ runner sets Qt's offscreen platform for you; on Windows it just runs.
 ## Why Python/PySide6 and SQLite + files
 
 Two design choices worth knowing about, since long-term data stewardship
-was part of the original ask:
+is a design goal:
 
 1. **Storage format.** Entries and projects live in one SQLite database
-   file (`journal.db`) as plain Markdown text; photos live as ordinary
-   image files in an `attachments/` folder next to it, referenced by
-   relative path. All of it is open, non-proprietary, and human-readable —
-   if this app is ever gone in 20 years, your data is still just a
-   database file, some plain text, and a folder of pictures.
+   file (`journal.db`) as rich-text HTML (entries written before the
+   format change stay Markdown until they are next edited); photos live as
+   ordinary image files in an `attachments/` folder next to it, referenced
+   by relative path. All of it is open and non-proprietary — if this app is
+   ever gone in 20 years, your data is still a database file and a folder
+   of pictures. If you turn on database encryption, `journal.db` is a
+   standard SQLCipher database, and `docs/RECOVERY.md` explains how to open
+   it without this app.
 2. **Where it lives.** Everything is under one folder:
-   `%APPDATA%\jortle_claude` on Windows. Backing up your whole journal is
-   always "zip that one folder" — which is exactly what File → Export
-   Backup automates for you.
+   `%APPDATA%\jortle_claude` on Windows. The backups described below are
+   copies of that folder's contents, checked after they are written.
 
 ## Running it (development / any OS)
 
@@ -571,21 +582,21 @@ This works on Windows, macOS, or Linux as-is.
 
 This part **must be run on a Windows machine** — PyInstaller bundles an
 app for whatever OS it's run on, and it can't cross-build a Windows `.exe`
-from this Linux environment.
+from Linux or macOS.
 
-1. Copy this whole `jortle_claude` folder onto your Windows PC, and keep it
-   at one fixed location — when you get updated source later, overwrite
-   the files inside this same folder rather than extracting to a new one,
-   so your desktop shortcut keeps pointing at the right place. (Nothing
-   in the app reads the folder's name — every path resolves relative to
-   the file asking for it — so if yours is still called `journal_app`
-   from an earlier download, renaming it is optional.)
-2. Make sure Python 3.10+ is installed
+1. Clone or copy this repository onto the Windows PC, and keep it at one
+   fixed location — when you update the source later, pull or overwrite
+   the files in this same folder rather than extracting to a new one, so
+   the desktop shortcut keeps pointing at the right place. (Nothing in the
+   app reads the folder's name — every path resolves relative to the file
+   asking for it — so the folder can be called anything.)
+2. Make sure Python 3.11 or newer is installed
    ([python.org](https://www.python.org/downloads/) — check "Add
    python.exe to PATH" during install).
-3. Double-click **`build_windows.bat`**. It installs the two dependencies
-   (PySide6 and PyInstaller) and produces `dist\jortle_claude\jortle_claude.exe`. It
-   asks you nothing — there is no optional component to choose any more.
+3. Double-click **`build_windows.bat`**. It installs the dependencies in
+   `requirements.txt` (PySide6, PyInstaller, and `sqlcipher3` and `pyrage`
+   for the optional encryption) and produces
+   `dist\jortle_claude\jortle_claude.exe`. It asks you nothing.
 4. Run **`create_desktop_shortcut.bat`** to drop a "jortle_claude"
    shortcut on your Desktop pointing at that .exe. If you still have an old
    "Daily Journal" shortcut from a previous build, that script removes it,
@@ -767,12 +778,15 @@ jortle_claude/
     icon.ico / icon.png          app icon
   tests/
     run_all.py                 runs every suite below: python tests/run_all.py
-    test_*.py                  21 standalone suites — rich text, database and
+    test_*.py                  40 standalone suites — rich text, database and
                                data-folder migrations, drag interactions, the
                                week view, day markers, responsive layout,
                                calendar colour/transparency/zoom/work hours,
-                               entry indicators, saving + undo, and that no
-                               AI remains anywhere in the application
+                               entry indicators, saving + undo, version
+                               history, single instance, backups, encryption
+                               and restore, repeating events, navigation,
+                               Tasks, project folders, and that no AI
+                               remains anywhere in the application
   docs/RECOVERY.md               every file, and how to open it without the app
   diagnose_data.py               read-only report on the data folders (see below)
   recover_entry.py               pull one entry out of a backup (see below)
@@ -1062,6 +1076,29 @@ scrolling are all untouched.
   changes** flag in the status bar, Save/Discard/Cancel before restoring a
   backup, and **one running copy at a time**.
 
+## What changed in Group 2 (backups, optional encryption, restore)
+
+* **Backups are automatic and checked.** Once a day while the app is open,
+  a backup goes into a folder outside the data folder (by default
+  `jortle_claude Backups` beside it). Each one is read back from disk and
+  checked — zip checksums, a SHA-256 for every file, the database's
+  integrity check — before it counts. Backups & Security shows the last
+  good one and whether one is overdue.
+* **Keeping backups:** everything by default, or the newest N automatic
+  ones. Only automatic backups the app made and checked are ever deleted.
+* **Encryption is optional**, and the database (SQLCipher) and backups
+  (age, `.jcbackup`) are separate choices with separate passphrases —
+  "use the same passphrase" is an option. If encrypted backups are chosen
+  but no passphrase is set, automatic backups pause and say so; they never
+  fall back to unencrypted.
+* **Keep unencrypted copies** keeps readable copies of whatever is
+  encrypted; turning it off deletes only those copies.
+* **Restore** takes `.zip` and `.jcbackup` files, checks the backup fully
+  first, and always moves current data aside rather than deleting it.
+* **`docs/RECOVERY.md`** explains how to open every file without the app.
+* The readable archive warns that it is unencrypted and no longer includes
+  the database.
+
 ## What changed in Group 3 (calendar, navigation, Tasks, folders)
 
 * Four workspaces: Daily Jorts, Weekly Schedule, Yearly Calendar (new),
@@ -1079,12 +1116,26 @@ scrolling are all untouched.
   and the month pane is one width in Daily Jorts and the Weekly Schedule.
 * Projects live in nested folders; old categories became folders.
 
-## Possible future additions (not built, since you asked to hold off)
+## What changed in the Group 3 fixes
 
-You mentioned interest in eventually viewing this on your phone, but
-asked not to act on that yet since you haven't decided about internet
-accessibility. Nothing here was built toward that — no server, no sync,
-and no ongoing network code of any kind — the app makes no network
-requests at all. The plain SQLite + HTML/Markdown + files format this app
-uses is a reasonable foundation for phone access whenever you're ready to
-consider that.
+* **Repeating events behave predictably.** Saving an occurrence without
+  changes writes nothing; the editor applies only the fields you changed;
+  dragging "this and following" or "entire series" shifts every occurrence
+  by the same amount; changing the rule keeps edited and cancelled
+  occurrences attached; a series split by "this and following" stays one
+  series.
+* Overlapping events sit side by side in the Weekly Schedule as they do in
+  the Day View, and the month navigator always shows the days on screen.
+* Today's number fits inside its circle at every font size.
+* A pane dragged shut stays shut; month panes are always wide enough for
+  their grid; the saved interface font applies fully at startup.
+* Project folders remember whether they are open or closed.
+
+See `CHANGELOG.md` for the full list.
+
+## Possible future additions (not built)
+
+Viewing the journal from a phone may be considered later, but nothing has
+been built toward it — no server, no sync, and no network code of any
+kind; the app makes no network requests at all. The open SQLite + HTML +
+files format is a reasonable foundation if that is ever built.
