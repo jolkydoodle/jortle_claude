@@ -30,3 +30,10 @@ env/
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# Development documents kept on the developer's machine only
+# (Master Specification, Implementation Handoff, Failure Patterns,
+# Project History, implementation protocol, Claude Code instructions).
+dev-docs/
+CLAUDE.md
+.claude/
