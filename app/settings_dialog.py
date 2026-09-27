@@ -40,7 +40,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QColorDialog, QComboBox, QDialog, QDialogButtonBox, QFontComboBox,
-    QFormLayout, QHBoxLayout, QLabel, QPushButton, QScrollArea, QSpinBox,
+    QFormLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QScrollArea, QSpinBox,
     QVBoxLayout, QWidget
 )
 
@@ -189,14 +189,24 @@ class SettingsDialog(QDialog):
         # The backup folder is visible here (Master Spec §46.1); everything
         # about backups and encryption is managed in one window, reached from
         # here and from the File menu.
-        self.backup_summary = QLabel(self._backup_summary())
-        self.backup_summary.setWordWrap(True)
-        self.backup_summary.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        # The folder is a read-only field, not a label: a path has no spaces
+        # to wrap at, so a label set a width floor that pushed this window
+        # wider than the screen at large fonts (bug 27). The field scrolls,
+        # and the whole path can still be selected and copied.
+        folder, status = self._backup_summary()
+        self.backup_folder = QLineEdit(folder)
+        self.backup_folder.setReadOnly(True)
+        self.backup_status = QLabel(status)
+        self.backup_status.setWordWrap(True)
+        self.backup_status.setTextInteractionFlags(Qt.TextSelectableByMouse)
         manage = QPushButton("Manage…")
         manage.setEnabled(open_backups is not None)
         manage.clicked.connect(self._manage_backups)
+        backup_text = QVBoxLayout()
+        backup_text.addWidget(self.backup_folder)
+        backup_text.addWidget(self.backup_status)
         backup_row = QHBoxLayout()
-        backup_row.addWidget(self.backup_summary, 1)
+        backup_row.addLayout(backup_text, 1)
         backup_row.addWidget(manage, 0, Qt.AlignTop)
         form.addRow("Backups:", backup_row)
 
@@ -231,7 +241,8 @@ class SettingsDialog(QDialog):
         self.setMinimumSize(MIN_WIDTH, MIN_HEIGHT)
         self.resize(*self._starting_size())
 
-    def _backup_summary(self) -> str:
+    def _backup_summary(self) -> tuple[str, str]:
+        """(backup folder, encryption status line)."""
         from . import backup, security
         from .paths import get_data_dir
         try:
@@ -241,16 +252,18 @@ class SettingsDialog(QDialog):
             backups_enc = security.backups_encrypted(data_dir)
             paused = security.backups_paused_reason(data_dir)
         except Exception:
-            return ""
+            return "", ""
         backups = ("paused (no backup passphrase set)" if paused else
                    "encrypted" if backups_enc else "not encrypted")
-        return (f"{folder}\nDatabase: {'encrypted' if db_enc else 'not encrypted'} · "
-                f"Backups: {backups}")
+        return (str(folder), f"Database: {'encrypted' if db_enc else 'not encrypted'} · "
+                             f"Backups: {backups}")
 
     def _manage_backups(self):
         if self._open_backups is not None:
             self._open_backups()
-            self.backup_summary.setText(self._backup_summary())
+            folder, status = self._backup_summary()
+            self.backup_folder.setText(folder)
+            self.backup_status.setText(status)
 
     def _starting_size(self) -> tuple[int, int]:
         """Opens wide enough for its own content, but never bigger than the

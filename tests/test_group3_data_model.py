@@ -325,6 +325,11 @@ archive.export_archive(db, out)
 # ends RFC 5545 requires into "\n" and hide whether they are there.
 ics = (out / "calendar" / "calendar.ics").read_bytes().decode("utf-8")
 vevents = ics.split("BEGIN:VEVENT")[1:]
+ics_lines = ics.split("\r\n")
+check("every line of the calendar file ends in exactly CRLF (on Windows too)",
+      ics.endswith("\r\n") and ics_lines[-1] == "" and len(ics_lines) > 10
+      and not any("\r" in line or "\n" in line for line in ics_lines),
+      f"{ics.count(chr(13))} CR, {ics.count(chr(10))} LF")
 
 
 def vevent(summary):

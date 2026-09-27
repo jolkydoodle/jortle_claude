@@ -21,12 +21,47 @@ migration suites build a fake filesystem root per case and call
 fallback on every branch — an unset `APPDATA` still resolves to
 `~/AppData/Roaming`, and leaving the real home directory reachable is how a
 "temporary" folder ends up somewhere permanent.
+
+FONTS ON WINDOWS. Importing this module also gives Qt's `offscreen` platform
+real fonts on Windows (`use_system_fonts_offscreen`). Without them it finds no
+font families at all, draws every glyph as a box and measures text about
+twice as wide as the real `windows` platform does ("Wednesday" at 9pt: 108 px
+against 61 px), so layout and pixel checks fail for widths no user ever
+sees. It has to happen before the QApplication exists, which is why it runs
+at import: every Qt suite imports this module first.
 """
 from __future__ import annotations
 
 import os
+import sys
 import tempfile
 from pathlib import Path
+
+
+def use_system_fonts_offscreen() -> None:
+    """On Windows under the offscreen platform (the tests' default), point
+    Qt at the system font folder and resolve the generic "Sans Serif" family
+    it asks for to Segoe UI, the family the native platform uses. Test
+    environment only; does nothing on other platforms or on the native one.
+    """
+    if sys.platform != "win32":
+        return
+    if os.environ.get("QT_QPA_PLATFORM", "offscreen") != "offscreen":
+        return
+    windir = os.environ.get("WINDIR") or os.environ.get("SystemRoot") or r"C:\Windows"
+    os.environ.setdefault("QT_QPA_FONTDIR", os.path.join(windir, "Fonts"))
+    from PySide6.QtGui import QFont
+    QFont.insertSubstitution("Sans Serif", "Segoe UI")
+    # Offscreen loads fonts with FreeType, which keeps each font file open
+    # through the C runtime, and the C runtime allows 512 open files by
+    # default. At large interface fonts Qt opens enough fallback fonts (for
+    # glyphs like ▶ and …) to reach that; the next font then fails to load
+    # and Qt draws the box font instead, twice as wide — at a random point in
+    # a run (measured: Segoe UI Semibold lost in the responsive sweep's 20pt
+    # passes). 8192 is the C runtime's own maximum. The native platform
+    # loads fonts through DirectWrite and never meets this limit.
+    import ctypes
+    ctypes.cdll.ucrtbase._setmaxstdio(8192)
 
 
 def point_at(root) -> Path:
@@ -49,3 +84,6 @@ def isolate(prefix: str = "jortle-test-") -> Path:
     `app` — the data directory is resolved once per process.
     """
     return point_at(tempfile.mkdtemp(prefix=prefix))
+
+
+use_system_fonts_offscreen()

@@ -16,14 +16,6 @@ Yearly Calendar    all twelve months of a year at a glance
 Projects           longer-term work in nested folders, with version history
 ```
 
-## Known issues
-
-On Windows, 7 of the 40 test suites currently fail; this is under
-investigation. In particular, **setting up database or backup encryption
-may fail on Windows, so Windows users should not set it up yet.** The
-calendar (`.ics`) export and some layouts at large interface font sizes
-are also affected. On Linux all suites pass.
-
 **Drag a tab to put the workspaces in whatever order you like.** The order
 is remembered between sessions. It is a display preference and nothing
 else — it changes no entry, project, event or task. (Daily Jorts was

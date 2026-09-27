@@ -77,6 +77,35 @@ check(f"the temp root is not the real home ({root})",
       root != pathlib.Path(tempfile.gettempdir()).resolve()
       and "Jortle" not in root.name)
 
+print("\n--- on Windows, offscreen text measures as it does on screen ---")
+MEASURE = (
+    "from PySide6.QtWidgets import QApplication\n"
+    "from PySide6.QtGui import QFont, QFontInfo, QFontMetrics\n"
+    "app = QApplication([])\n"
+    "f = QFont(app.font()); f.setPointSize(9)\n"
+    "print(QFontInfo(app.font()).family(), QFontMetrics(f).horizontalAdvance('Wednesday'))\n")
+if sys.platform != "win32" or os.environ["QT_QPA_PLATFORM"] != "offscreen":
+    print("  NOT APPLICABLE  (only Windows' offscreen platform lacks fonts)")
+else:
+    import subprocess
+
+    def measured(platform):
+        """(family, width) printed by MEASURE in a fresh process."""
+        out = subprocess.run([sys.executable, "-c", MEASURE], capture_output=True, text=True,
+                             env=dict(os.environ, QT_QPA_PLATFORM=platform), timeout=60)
+        family, _, width = out.stdout.strip().rpartition(" ")
+        return family.strip() or "(none)", int(width) if width.isdigit() else -1
+
+    # The offscreen process imports isolation first, as every suite does.
+    MEASURE = "import isolation\n" + MEASURE
+    os.environ["PYTHONPATH"] = str(pathlib.Path(__file__).resolve().parent)
+    family, width = measured("offscreen")
+    native_family, native_width = measured("windows")
+    check(f"the application font resolves to Segoe UI ({family})", family == "Segoe UI")
+    check(f"'Wednesday' at 9pt measures as on the native platform "
+          f"({width} px offscreen, {native_width} px native {native_family})",
+          width > 0 and width == native_width)
+
 print()
 if failures:
     print(f"{len(failures)} FAILURE(S):")

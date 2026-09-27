@@ -135,8 +135,12 @@ check("(a) the unfinished encrypted copy and its database key are removed",
 check("(a) the backup key, which belongs to backup encryption, is left alone",
       (target / security.BACKUP_KEY_FILE).read_bytes() == b"belongs to backup encryption")
 (target / security.BACKUP_KEY_FILE).unlink()
+# Closed before (b) renames the file: Windows refuses to rename an open file,
+# and an unclosed sqlite3 connection stays open until the cyclic GC runs.
+db = Database(target / "journal.db")
 check("(a) the unencrypted journal is untouched and opens",
-      Database(target / "journal.db").get_entry("2026-04-04").body_text == "keep me")
+      db.get_entry("2026-04-04").body_text == "keep me")
+db.close()
 # (b) stopped between the two renames: no journal.db at all
 os.replace(target / "journal.db", target / security.BEFORE_ENCRYPTION)
 notes = security.finish_interrupted_setup(target)

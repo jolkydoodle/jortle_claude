@@ -16,7 +16,13 @@ Two things here exist because of Windows specifically:
 
   * `PYTHONIOENCODING` is set for the same reason in the other direction: a
     child printing "…" to a cp1252 stdout raises UnicodeEncodeError inside
-    the test, which looks like a test failure and is not.
+    the test, which looks like a test failure and is not;
+
+  * the runner's OWN stdout and stderr are switched to UTF-8 as well. When
+    they are a pipe (CI, or `run_all.py | more`), Python on Windows writes
+    them in the locale code page, so printing a failing suite's "▶" raised
+    UnicodeEncodeError in the runner and hid the rest of the failure
+    details and the final FAILED: line.
 
 A failing suite gets its full output printed. A one-line summary is enough
 when everything passes and useless when something does not — particularly in
@@ -54,6 +60,8 @@ def summarise(output: str, ok: bool) -> str:
 
 
 def main() -> int:
+    for stream in (sys.stdout, sys.stderr):
+        stream.reconfigure(encoding="utf-8", errors="replace")
     env = dict(os.environ)
     if sys.platform.startswith("linux") and not env.get("DISPLAY"):
         env.setdefault("QT_QPA_PLATFORM", "offscreen")
