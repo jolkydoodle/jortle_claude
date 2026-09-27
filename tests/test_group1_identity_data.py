@@ -248,9 +248,18 @@ for legacy_name in ("Jortle", "DailyJournal"):
         check(f"the app starts on it and shows the old entry ({legacy_name})",
               "old" in win.editor.text_edit.toPlainText())
         win.close()
+        first_import = json.loads((data_dir / "data_version.json").read_text(encoding="utf-8"))
+        siblings = sorted(p.name for p in pre21_root.iterdir())
         dm.reset_for_tests()
+        second = dm.resolve_data_dir()
+        again = json.loads((data_dir / "data_version.json").read_text(encoding="utf-8"))
         check(f"a second launch uses it without re-importing ({legacy_name})",
-              dm.resolve_data_dir() == data_dir)
+              second == data_dir and dm.migration_result().case == "D"
+              and first_import.get("migrated_at")
+              and again.get("migrated_at") == first_import.get("migrated_at")
+              and sorted(p.name for p in pre21_root.iterdir()) == siblings,
+              f"case {dm.migration_result().case}, migrated_at "
+              f"{first_import.get('migrated_at')} -> {again.get('migrated_at')}")
     check(f"the {legacy_name} folder is untouched", fingerprint(legacy) == before)
 isolation.point_at(root)
 dm.reset_for_tests()
