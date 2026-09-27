@@ -153,7 +153,10 @@ tmp_container, cipher = backup._write_container(
         "format": backup.CONTAINER_FORMAT, "format_version": 1, "backup_id": "x",
         "created_at": "", "kind": "manual",
         "recipient": security.load_config(d)["backup_recipient"]}, d)
-err = raises(lambda: backup._check_written_container(tmp_container, cipher[:-1] + b"!", "x"),
+# Flip one bit of the last byte: always different (appending a fixed byte
+# matched the original whenever the random ciphertext already ended in it).
+err = raises(lambda: backup._check_written_container(
+                 tmp_container, cipher[:-1] + bytes([cipher[-1] ^ 0x01]), "x"),
              backup.RestoreError)
 check("the read-back check refuses a file whose ciphertext differs",
       isinstance(err, backup.RestoreError))
