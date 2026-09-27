@@ -2,7 +2,7 @@
 REM ============================================================
 REM  jortle_claude - Windows build script
 REM
-REM  Run this on a Windows machine (with Python 3.10+ installed)
+REM  Run this on a Windows machine (with Python 3.11 or newer installed)
 REM  from inside the jortle_claude folder. It will:
 REM    1. Install dependencies
 REM    2. Bundle the app with PyInstaller into dist\jortle_claude\

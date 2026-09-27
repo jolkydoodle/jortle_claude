@@ -8,12 +8,6 @@ Changes from before the `jortle_claude` rename (the Jortle rounds, the
 redesign, the backup/restore fixes and the bug hunt) are described in the
 "What changed …" sections of `README.md`.
 
-**Known issues (2026-09-26):** on Windows, 7 of the 40 test suites
-currently fail and are under investigation. Setting up database or backup
-encryption may fail on Windows, so Windows users should not set it up yet;
-the calendar (`.ics`) export and some layouts at large interface font sizes
-are also affected. See "Known issues" in `README.md`.
-
 ## Group 3 fixes — 2026-09-25
 
 Fixes for the problems found by the independent re-audit of Group 3, plus
