@@ -51,10 +51,12 @@ the standard `sqlcipher` and `age` tools, without this application.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import secrets
 import sqlite3
+import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
@@ -89,6 +91,43 @@ _HEX_KEY = re.compile(r"^[0-9a-f]{64}$")
 # Anything either SQLite binding can raise. The live database may be opened
 # through either one, so code that catches database errors catches both.
 DB_ERRORS: tuple = (sqlite3.Error,) + ((sqlcipher.Error,) if sqlcipher else ())
+
+log = logging.getLogger(__name__)
+
+# Opening the journal retries an I/O error for about this long (A2, Windows
+# fixes). Windows releases the file locks of a process that was killed a
+# moment ago asynchronously — after the process has already been reported
+# as ended — so the app restarted straight after being killed can find
+# journal.db-shm still locked and get SQLITE_IOERR. It has always opened a
+# fraction of a second later. Only I/O errors are retried: a wrong key, or
+# a file that is not a database, fails at once.
+IO_RETRY_SECONDS = 1.0
+IO_RETRY_INTERVAL = 0.1
+_SQLITE_IOERR = 10
+
+
+def is_io_error(exc: BaseException) -> bool:
+    """True for SQLITE_IOERR and its extended codes, from either binding."""
+    code = getattr(exc, "sqlite_errorcode", None)
+    return code is not None and code & 0xFF == _SQLITE_IOERR
+
+
+def _retrying_io_errors(path: Path, open_once):
+    """Calls open_once() until it stops raising an I/O error, for at most
+    IO_RETRY_SECONDS; every other error, and the last I/O error, is raised.
+    Each retry is logged."""
+    deadline = time.monotonic() + IO_RETRY_SECONDS
+    attempt = 0
+    while True:
+        try:
+            return open_once()
+        except DB_ERRORS as exc:
+            if not is_io_error(exc) or time.monotonic() >= deadline:
+                raise
+            attempt += 1
+            log.warning("Opening %s gave an I/O error (%s); retry %d in %d ms",
+                        path, exc, attempt, int(IO_RETRY_INTERVAL * 1000))
+            time.sleep(IO_RETRY_INTERVAL)
 
 
 class SecurityError(Exception):
@@ -294,21 +333,36 @@ def _open_encrypted(path: Path, key: str, readonly: bool = False):
             "so it cannot open an encrypted journal.")
     key = _check_key(key)
     target = f"file:{path}?mode=ro" if readonly else str(path)
-    conn = sqlcipher.connect(target, uri=readonly)
-    # The key must be the first statement on the connection. A raw key
-    # (x'…') skips SQLCipher's own key derivation: the passphrase has
-    # already been stretched by age's scrypt, once, when db-key.age was
-    # unlocked — doing it again on every open would only slow things down.
-    conn.execute(f"PRAGMA key = \"x'{key}'\"")
+
+    def open_once():
+        conn = sqlcipher.connect(target, uri=readonly)
+        # The key must be the first statement on the connection. A raw key
+        # (x'…') skips SQLCipher's own key derivation: the passphrase has
+        # already been stretched by age's scrypt, once, when db-key.age was
+        # unlocked — doing it again on every open would only slow things down.
+        conn.execute(f"PRAGMA key = \"x'{key}'\"")
+        try:
+            conn.execute("SELECT count(*) FROM sqlite_master").fetchall()
+        except sqlcipher.Error:
+            conn.close()
+            raise
+        return conn
+
     try:
-        conn.execute("SELECT count(*) FROM sqlite_master").fetchone()
+        return _retrying_io_errors(path, open_once)
     except sqlcipher.Error as exc:
-        conn.close()
+        if is_io_error(exc):
+            # A read or lock failure, not a key or decryption failure: saying
+            # "damaged" or "wrong key file" here would send the user after
+            # the wrong problem (A1).
+            raise SecurityError(
+                f"The journal could not be read ({exc}). Another program may be "
+                "holding the file; close it, or wait a moment, and try again."
+            ) from exc
         raise SecurityError(
             "The database could not be opened with its key "
             f"({exc}). It may be damaged, or the key file may not belong to it."
         ) from exc
-    return conn
 
 
 def connect(db_path: Path, readonly: bool = False):
@@ -328,10 +382,25 @@ def connect(db_path: Path, readonly: bool = False):
         conn = _open_encrypted(db_path, session.db_key, readonly=readonly)
         conn.row_factory = sqlcipher.Row
         return conn
-    if readonly:
-        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
-    else:
-        conn = sqlite3.connect(str(db_path))
+
+    def open_once():
+        if readonly:
+            conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        else:
+            conn = sqlite3.connect(str(db_path))
+        # sqlite3 opens the file lazily, so an I/O error would otherwise
+        # surface at the caller's first statement, past the retry. Only an
+        # I/O error is acted on here; anything else is left to that first
+        # statement, exactly as before.
+        try:
+            conn.execute("SELECT count(*) FROM sqlite_master").fetchall()
+        except sqlite3.Error as exc:
+            if is_io_error(exc):
+                conn.close()
+                raise
+        return conn
+
+    conn = _retrying_io_errors(db_path, open_once)
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -392,6 +461,22 @@ def unlock(data_dir: Path, passphrase: str):
     session.db_key, session.source = key, "passphrase"
     if identity:
         session.identity = identity
+
+
+def ask_passphrase_on_console(prompt: str) -> str:
+    """The command-line tools' passphrase prompt (diagnose_data.py,
+    recover_entry.py): without echo at a terminal, otherwise one line from
+    standard input.
+
+    `getpass` alone is not enough: on POSIX it falls back to stdin when there
+    is no terminal, but on Windows it reads only the console and ignores a
+    piped stdin, so `echo … | python recover_entry.py …` waited forever."""
+    import sys
+    if sys.stdin is None or sys.stdin.isatty():
+        import getpass
+        return getpass.getpass(prompt)
+    print(prompt, end="", file=sys.stderr, flush=True)
+    return sys.stdin.readline().rstrip("\r\n")
 
 
 def unlock_backup_key(data_dir: Path, passphrase: str):

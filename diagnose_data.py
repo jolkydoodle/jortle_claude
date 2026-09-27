@@ -333,9 +333,9 @@ def main():
     target = dm.target_dir()
     if "--unlock" in sys.argv[1:] and security.is_encrypted_install(target):
         if not security.unlock_with_plain_keys(target):
-            import getpass
             try:
-                security.unlock(target, getpass.getpass("Database passphrase: "))
+                security.unlock(target, security.ask_passphrase_on_console(
+                    "Database passphrase: "))
             except security.WrongPassphrase:
                 print("That passphrase is not correct; continuing without it.")
         if security.session.db_key:

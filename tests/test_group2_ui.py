@@ -172,7 +172,14 @@ sd = SettingsDialog(win.db, on_change=lambda: None, parent=win,
                     open_backups=lambda: opened.append(1))
 sd.show()
 settle()
-check("Settings shows the backup folder", str(backup.backup_dir()) in sd.backup_summary.text())
+check("Settings shows the backup folder, whole, in a read-only field",
+      sd.backup_folder.text() == str(backup.backup_dir()) and sd.backup_folder.isReadOnly())
+sd.backup_folder.selectAll()
+sd.backup_folder.copy()
+check("...whose path can be selected and copied in full",
+      QApplication.clipboard().text() == str(backup.backup_dir()))
+check("...with the encryption state beside it",
+      "Database: not encrypted" in sd.backup_status.text())
 sd._manage_backups()
 check("Manage… opens Backups & Security", opened == [1])
 shot(sd, "settings_backups_row")
@@ -440,9 +447,14 @@ win2._startup_backup_tasks()
 check("a second check does not ask again or back up again",
       asked == [1] and len(backup.scan_backups()) == 1)
 check("no 'overdue' indicator after a fresh backup", win2._backup_indicator.isHidden())
-# Make the next automatic backup due, into a folder that cannot be created.
-security.update_config(get_data_dir(), last_backup=None,
-                       backup_dir="/proc/definitely-not-writable/x")
+# Make the next automatic backup due, into a folder that cannot be created on
+# any OS: its parent is an ordinary file inside the isolated root. (The old
+# "/proc/definitely-not-writable/x" is C:\proc\… on Windows, which any user can
+# create, so the backup succeeded — outside the isolated root.)
+blocker = root / "an-ordinary-file"
+blocker.write_bytes(b"not a folder")
+unwritable = blocker / "x"
+security.update_config(get_data_dir(), last_backup=None, backup_dir=str(unwritable))
 criticals_before = len(criticals)
 win2._automatic_backup_if_due()
 settle()
@@ -452,6 +464,8 @@ check("an automatic backup that fails is reported without a modal error",
 check("the failure is kept for the Backups & Security window",
       security.load_config(get_data_dir())["last_error"])
 check("and the status bar shows a backup warning", not win2._backup_indicator.isHidden())
+check("the failed backup created nothing (its parent is still a file)",
+      blocker.is_file() and not unwritable.exists())
 shot(win2, "main_window_backup_failed_indicator")
 win2.editor.mark_clean()
 win2.projects_widget.editor.mark_clean()
@@ -513,7 +527,29 @@ check("with unencrypted copies kept, it starts without asking for the passphrase
       proc.stderr.read()[-400:] if proc.poll() is not None else "")
 proc.kill()
 proc.wait(timeout=30)
-backup.set_keep_unencrypted_copies(Database(), False)
+
+
+def reopen_after_kill():
+    """Windows releases a killed process's file locks asynchronously, after
+    wait() has returned, so the first reopen can meet an I/O error (bug 22).
+    Waits for it for at most 5 s. JORTLE_TEST_NO_REOPEN_WAIT=1 switches the
+    wait off, to show that the app's own retry is enough (WF-14)."""
+    if os.environ.get("JORTLE_TEST_NO_REOPEN_WAIT") == "1":
+        return Database()
+    deadline = time.monotonic() + 5
+    while True:
+        try:
+            return Database()
+        except (security.SecurityError, *security.DB_ERRORS):
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(0.1)
+
+
+reopened = reopen_after_kill()
+check("the journal reopens straight after the app was killed", reopened.encrypted)
+backup.set_keep_unencrypted_copies(reopened, False)
+reopened.close()
 security.session.clear()
 proc = subprocess.Popen([sys.executable, str(REPO / "jortle_claude.py")], env=env,
                         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)

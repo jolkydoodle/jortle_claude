@@ -11,11 +11,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: ubuntu-latest
-            python: "3.11"
-          - os: windows-latest
-            python: "3.11"
+        os: [ubuntu-latest, windows-latest]
+        python: ["3.11", "3.13"]
     runs-on: ${{ matrix.os }}
 
     steps:
@@ -36,7 +33,9 @@ jobs:
             libxcb-xfixes0
 
       - name: Install dependencies
-        run: python -m pip install "PySide6>=6.7" "sqlcipher3>=0.6" "pyrage>=1.4"
+        # python-dateutil is for the tests only: it reads the exported
+        # calendar.ics back (test_group3_data_model, check [13]).
+        run: python -m pip install "PySide6>=6.7" "sqlcipher3>=0.6" "pyrage>=1.4" python-dateutil
 
       - name: Run the suite
         env:

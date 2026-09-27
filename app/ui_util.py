@@ -20,7 +20,7 @@ would otherwise set a floor under the window width.
 """
 from __future__ import annotations
 
-from PySide6.QtWidgets import QApplication, QComboBox, QLabel, QSizePolicy
+from PySide6.QtWidgets import QApplication, QComboBox, QLabel, QLayout, QSizePolicy, QWidget
 
 # The application font size the app's pixel budgets were chosen at. Anything
 # expressed in pixels that has to hold TEXT is scaled from here rather than
@@ -106,6 +106,28 @@ def make_shrinkable_combo(combo: QComboBox, visible_chars: int = 10) -> QComboBo
     policy.setHorizontalPolicy(QSizePolicy.Expanding)
     combo.setSizePolicy(policy)
     return combo
+
+
+def remeasure_hidden(page: QWidget) -> None:
+    """Makes a page that is not on screen (a workspace tab in the
+    background) report the minimum size of the CURRENT font again.
+
+    Qt caches size hints in the layouts, and a font change clears those
+    caches through updateGeometry(), which stops short of the layouts of a
+    page that is not shown. After a font change the pages in the
+    background kept the minimums of the font before — and a QTabWidget's
+    minimum is the largest of all its pages, so after 20pt → 10pt the window
+    refused to get narrower than the 20pt layout needed until each tab had
+    been visited (bug 26 / D10). Both caches are cleared: updateGeometry()
+    on every widget (the size a layout keeps for each widget it holds) and
+    invalidate() on every layout (the totals the layout keeps for itself);
+    measured, each alone leaves some of the old minimums in place. Nothing
+    is resized or shown.
+    """
+    for widget in [page, *page.findChildren(QWidget)]:
+        widget.updateGeometry()
+    for layout in page.findChildren(QLayout):
+        layout.invalidate()
 
 
 def wrapping_label(text: str = "", object_name: str | None = None) -> QLabel:

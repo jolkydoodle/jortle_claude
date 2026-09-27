@@ -172,6 +172,35 @@ check(f"the window's own minimum fits a 1366x768 screen "
       f"({win.minimumSizeHint().width()}x{win.minimumSizeHint().height()})",
       win.minimumSizeHint().width() <= 1300 and win.minimumSizeHint().height() <= 740)
 
+# After a large font and back, the window's minimum is a fresh window's —
+# whichever tab is showing, so the tabs in the background must re-measure
+# too (bug 26 / D10: they kept the 20pt minimums until visited).
+fresh = MainWindow()
+fresh.resize(win.size())
+fresh.show()
+settle()
+# The same date and size: the Day pane's content and the pane widths are
+# part of the minimum, and are not what this check is about.
+fresh.selected_date.set(win.selected_date.value)
+settle()
+fresh_minimum = fresh.minimumSizeHint().width()
+fresh.close()
+settle()
+for index in range(win.main_tabs.count()):
+    page = win.main_tabs.widget(index)
+    win.main_tabs.setCurrentWidget(page)
+    settle()
+    for point_size in (20, 10):
+        win.db.set_setting("ui_font_size", str(point_size))
+        win._apply_settings()
+        settle()
+    minimum = win.minimumSizeHint().width()
+    check(f"20pt -> 10pt on {win.main_tabs.tabText(index)!r}: the window's minimum width is "
+          f"a fresh window's ({minimum} vs {fresh_minimum})",
+          abs(minimum - fresh_minimum) <= 2)
+print(f"Font round trip checked on {win.main_tabs.count()} tabs "
+      f"(fresh window's minimum at 10pt: {fresh_minimum}px).")
+
 win.close()
 print("\n" + ("ALL PASS" if not failures
               else f"{len(failures)} FAILURES (first 10): {failures[:10]}"))

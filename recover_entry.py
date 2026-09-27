@@ -28,7 +28,6 @@ requirements.txt.)
 """
 from __future__ import annotations
 
-import getpass
 import io
 import re
 import sqlite3
@@ -61,7 +60,7 @@ class Source:
 
 
 def _ask(prompt: str) -> str:
-    return getpass.getpass(prompt)
+    return security.ask_passphrase_on_console(prompt)
 
 
 def _from_zip_bytes(data: bytes) -> Source:

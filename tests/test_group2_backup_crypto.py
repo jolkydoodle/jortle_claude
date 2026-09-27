@@ -469,5 +469,79 @@ out = subprocess.run([sys.executable, "-c", script], capture_output=True, text=T
 check("a new process opens the encrypted journal with the passphrase",
       out.stdout.strip() == "from elsewhere", out.stderr[-300:])
 
+print("\n--- an I/O error at open is retried, then worded as an I/O error ---")
+# Windows releases a killed process's file locks a moment after it has ended
+# (bug 22); opening meets SQLITE_IOERR until then. Simulated here by making
+# the binding's connect() fail with that error code a given number of times.
+import logging  # noqa: E402
+import time  # noqa: E402
+retries = []
+
+
+class _Collect(logging.Handler):
+    def emit(self, record):
+        retries.append(record.getMessage())
+
+
+logging.getLogger("app.security").addHandler(_Collect())
+
+
+def failing_connect(real, times, code):
+    state = {"left": times}
+
+    def connect(*args, **kwargs):
+        if state["left"] != 0:
+            state["left"] -= 1
+            exc = binding.OperationalError(
+                "disk I/O error" if code == 10 else "file is not a database")
+            exc.sqlite_errorcode = code
+            raise exc
+        return real(*args, **kwargs)
+    return connect
+
+
+def open_with(module, times, code, open_fn):
+    """(result or exception, seconds, retries logged)."""
+    global binding
+    binding = module
+    real = module.connect
+    module.connect = failing_connect(real, times, code)
+    del retries[:]
+    started = time.monotonic()
+    try:
+        result = open_fn()
+    except Exception as exc:        # noqa: BLE001 — the test inspects it
+        result = exc
+    finally:
+        module.connect = real
+    return result, time.monotonic() - started, len(retries)
+
+
+cipher = security.sqlcipher
+result, took, logged = open_with(cipher, 2, 10, Database)
+check("encrypted: two I/O errors, then the journal opens",
+      isinstance(result, Database) and result.get_entry("2027-05-05").body_text == "from elsewhere",
+      repr(result))
+check("...and each retry was logged", logged == 2, f"{logged} logged")
+if isinstance(result, Database):
+    result.close()
+result, took, logged = open_with(cipher, -1, 10, Database)
+check("an I/O error that does not go away is reported after about a second",
+      isinstance(result, security.SecurityError) and 0.9 <= took < 3, f"{took:.2f}s {result!r}")
+check("...as an I/O error, not as a damaged journal or a wrong key",
+      isinstance(result, security.SecurityError) and "could not be read" in str(result)
+      and "key" not in str(result) and "damaged" not in str(result), str(result))
+result, took, logged = open_with(cipher, -1, 26, Database)
+check("a key or 'not a database' error is not retried, and keeps its own wording",
+      isinstance(result, security.SecurityError) and logged == 0 and took < 0.5
+      and "key" in str(result), f"{logged} retries, {took:.2f}s, {result}")
+plain_path = get_data_dir().parent / "plain-io-test.db"
+Database(plain_path).close()
+result, took, logged = open_with(sqlite3, 2, 10, lambda: security.connect(plain_path))
+check("a plain journal gets the same retry",
+      isinstance(result, sqlite3.Connection) and logged == 2, f"{logged} logged, {result!r}")
+if isinstance(result, sqlite3.Connection):
+    result.close()
+
 print("\n" + ("ALL PASS" if not failures else f"{len(failures)} FAILURES: {failures}"))
 sys.exit(1 if failures else 0)

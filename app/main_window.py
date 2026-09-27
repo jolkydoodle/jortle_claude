@@ -47,7 +47,8 @@ from .saving import (
 from .settings_dialog import SettingsDialog
 from .theme import build_stylesheet, scheme_from_json
 from .ui_util import (
-    DAY_PANE_WIDTH_SETTING, MONTHLY_PANE_WIDTH_SETTING, saved_width, side_pane_width
+    DAY_PANE_WIDTH_SETTING, MONTHLY_PANE_WIDTH_SETTING, remeasure_hidden, saved_width,
+    side_pane_width
 )
 from .week_calendar import WeekCalendarWidget
 
@@ -920,10 +921,22 @@ class MainWindow(QMainWindow):
         splitters report stale widths.
         """
         QTimer.singleShot(0, self._apply_pane_sizes)
+        QTimer.singleShot(0, self._remeasure_background_tabs)
         if hasattr(self, "projects_widget"):
             self.projects_widget.rebalance_panes()
         if hasattr(self, "week_calendar"):
             self.week_calendar.rebalance_panes()
+
+    def _remeasure_background_tabs(self):
+        """After a font change, the workspace tabs not on screen report the
+        new font's minimum too; otherwise the window's minimum width stays at
+        the old font's (see ui_util.remeasure_hidden)."""
+        if not hasattr(self, "main_tabs"):
+            return
+        for index in range(self.main_tabs.count()):
+            page = self.main_tabs.widget(index)
+            if page is not self.main_tabs.currentWidget():
+                remeasure_hidden(page)
 
     def showEvent(self, event):
         """Sizes the panes again once the window is really on screen, when

@@ -375,7 +375,10 @@ def _write_calendar(root: Path, events: list, db: Database):
             lines.append(f"DESCRIPTION:{_ics_escape(event.notes)}")
         lines.append("END:VEVENT")
     lines.append("END:VCALENDAR")
-    (calendar_dir / "calendar.ics").write_text("\r\n".join(lines) + "\r\n", encoding="utf-8")
+    # newline="": the lines already end in CRLF (RFC 5545), and text mode on
+    # Windows would turn each "\n" into "\r\n" again, giving "\r\r\n".
+    (calendar_dir / "calendar.ics").write_text("\r\n".join(lines) + "\r\n", encoding="utf-8",
+                                               newline="")
 
     import csv
     with (calendar_dir / "calendar.csv").open("w", newline="", encoding="utf-8") as handle:
