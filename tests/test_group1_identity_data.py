@@ -191,6 +191,71 @@ Database(folder / "journal.db").close()
 check("a freshly created database is still scaffolding", dm.has_user_content(folder) is False)
 
 
+print("\n--- a folder from before round 21 (no body_text) migrates and opens ---")
+# Validation reads the copy before anything upgrades its schema, so it must
+# cope with the columns an old database actually has (1R-F3, bug 30).
+pre21_root = root / "pre21"
+pre21_root.mkdir()
+isolation.point_at(pre21_root)
+for legacy_name in ("Jortle", "DailyJournal"):
+    for leftover in pre21_root.iterdir():
+        if leftover.name != "home":
+            shutil.rmtree(leftover)
+    legacy = pre21_root / legacy_name
+    legacy.mkdir()
+    conn = sqlite3.connect(legacy / "journal.db")
+    conn.executescript("""
+        CREATE TABLE entries (date TEXT PRIMARY KEY, title TEXT NOT NULL DEFAULT '',
+            body_md TEXT NOT NULL DEFAULT '', tag TEXT, tag_color TEXT,
+            created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+        CREATE TABLE tasks (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT NOT NULL,
+            text TEXT NOT NULL, checked INTEGER NOT NULL DEFAULT 0,
+            position INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL);
+        CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT);
+        CREATE TABLE projects (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL,
+            content_md TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL, archived INTEGER NOT NULL DEFAULT 0);
+        CREATE TABLE project_versions (id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL, content_md TEXT NOT NULL, label TEXT,
+            kind TEXT NOT NULL DEFAULT 'manual', saved_at TEXT NOT NULL);
+        INSERT INTO entries VALUES ('2025-03-01', '', 'An **old** entry', NULL, NULL, 'x', 'x');
+        INSERT INTO entries VALUES ('2025-03-02', '', '', 'Rest', '#88aa88', 'x', 'x');
+        INSERT INTO entries VALUES ('2025-03-03', '', '\n\n', NULL, NULL, 'x', 'x');
+        INSERT INTO tasks (date, text, created_at) VALUES ('2025-03-01', 'old task', 'x');
+        INSERT INTO projects (title, content_md, created_at, updated_at)
+            VALUES ('Old project', '# Plan', 'x', 'x');
+    """)
+    conn.commit()
+    conn.close()
+    before = fingerprint(legacy)
+    dm.reset_for_tests()
+    try:
+        data_dir = dm.resolve_data_dir()
+        error = None
+    except dm.MigrationError as exc:
+        error = str(exc)
+    check(f"a pre-round-21 {legacy_name} folder migrates", error is None, error)
+    if error is None:
+        db = Database()
+        entry = db.get_entry("2025-03-01")
+        check(f"...into jortle_claude, and its entry opens ({legacy_name})",
+              data_dir == pre21_root / "jortle_claude" and entry is not None
+              and "old" in (entry.body_text or ""))
+        db.close()
+        from app.main_window import MainWindow  # noqa: E402
+        win = MainWindow()
+        win._load_date("2025-03-01")
+        check(f"the app starts on it and shows the old entry ({legacy_name})",
+              "old" in win.editor.text_edit.toPlainText())
+        win.close()
+        dm.reset_for_tests()
+        check(f"a second launch uses it without re-importing ({legacy_name})",
+              dm.resolve_data_dir() == data_dir)
+    check(f"the {legacy_name} folder is untouched", fingerprint(legacy) == before)
+isolation.point_at(root)
+dm.reset_for_tests()
+
+
 print("\n--- the archive uses the same rule ---")
 from app.archive import export_archive  # noqa: E402
 db = Database()

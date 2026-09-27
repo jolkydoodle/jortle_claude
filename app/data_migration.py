@@ -86,9 +86,7 @@ from pathlib import Path
 from typing import Optional
 
 from . import security
-from .saving import (
-    MEANINGFUL_TEXT_SQL, SQL_CONTENT_FUNCTION, content_sql, register_sql_functions
-)
+from .saving import SQL_CONTENT_FUNCTION, content_sql, register_sql_functions
 
 # The folder jortle_claude uses from now on. Platform-conventional location,
 # with the application's own name — see paths.py. Deliberately NOT "Jortle":
@@ -294,10 +292,15 @@ def validate_data_dir(path: Path, expect_attachments: bool = False) -> list:
         # Rich text specifically: read one real entry body end to end, so a
         # truncated copy is caught here rather than when the user opens it.
         # "Real" is the app's one written-vs-blank rule: a blank row left by
-        # an earlier version has no formatted content to lose.
+        # an earlier version has no formatted content to lose. The copy is
+        # checked as it was copied, before any schema upgrade, so a database
+        # from before round 21 has no body_text: its stored Markdown is the
+        # text (the upgrade that adds the column copies it across the same way).
+        entry_cols = {r["name"] for r in conn.execute('PRAGMA table_info("entries")')}
+        text = "body_text" if "body_text" in entry_cols else "body_md"
         row = conn.execute(
-            "SELECT date, body_md, body_text FROM entries "
-            f"WHERE {MEANINGFUL_TEXT_SQL} ORDER BY date DESC LIMIT 1"
+            f"SELECT date, body_md FROM entries WHERE {content_sql(text, 'body_md')} "
+            "ORDER BY date DESC LIMIT 1"
         ).fetchone()
         if row is not None:
             if not row["body_md"]:
