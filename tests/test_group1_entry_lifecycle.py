@@ -256,6 +256,31 @@ check("diagnose_data: an image-only entry absent here is reported missing, not s
 check("diagnose_data: a folder holding only a blank row has nothing missing",
       "HAS WRITING" not in report.split(blank_other.name, 1)[1], report)
 
+# Validation reads the newest WRITTEN entry end to end (1R-F2): a newer
+# legacy blank row must not be picked and reported as damaged.
+ROW = ("INSERT INTO entries (date, title, body_md, body_format, body_text, created_at, "
+       "updated_at) VALUES (?, '', ?, 'html', ?, 'x', 'x')")
+for i, blank in enumerate(("\n\n\n", "\t")):
+    folder, db = one_row_folder(f"validate-{i}", ROW, "2026-01-05", "<p>words</p>", "words")
+    db._conn.execute(ROW, ("2026-01-06", "", blank))
+    db._conn.commit()
+    db.close()
+    try:
+        data_migration.validate_data_dir(folder)
+        error = None
+    except ValueError as exc:
+        error = str(exc)
+    check(f"a newer blank row ({blank!r}) does not fail validation", error is None, error)
+folder, db = one_row_folder("validate-damaged", ROW, "2026-01-05", "", "words")
+db.close()
+try:
+    data_migration.validate_data_dir(folder)
+    error = ""
+except ValueError as exc:
+    error = str(exc)
+check("a written entry without its formatted content is still reported",
+      "lost its formatted content" in error, error)
+
 
 # ====================================================== 1. empty dates
 win = MainWindow()

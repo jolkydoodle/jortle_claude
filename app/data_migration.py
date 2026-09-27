@@ -86,7 +86,9 @@ from pathlib import Path
 from typing import Optional
 
 from . import security
-from .saving import SQL_CONTENT_FUNCTION, content_sql, register_sql_functions
+from .saving import (
+    MEANINGFUL_TEXT_SQL, SQL_CONTENT_FUNCTION, content_sql, register_sql_functions
+)
 
 # The folder jortle_claude uses from now on. Platform-conventional location,
 # with the application's own name — see paths.py. Deliberately NOT "Jortle":
@@ -241,6 +243,7 @@ def validate_data_dir(path: Path, expect_attachments: bool = False) -> list:
     try:
         conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
         conn.row_factory = sqlite3.Row
+        register_sql_functions(conn)
     except sqlite3.Error as exc:
         raise ValueError(f"the copied database could not be opened ({exc})") from exc
 
@@ -290,9 +293,11 @@ def validate_data_dir(path: Path, expect_attachments: bool = False) -> list:
             checks.append(f"{label}: {count} row(s) readable")
         # Rich text specifically: read one real entry body end to end, so a
         # truncated copy is caught here rather than when the user opens it.
+        # "Real" is the app's one written-vs-blank rule: a blank row left by
+        # an earlier version has no formatted content to lose.
         row = conn.execute(
             "SELECT date, body_md, body_text FROM entries "
-            "WHERE TRIM(COALESCE(body_text, '')) != '' ORDER BY date DESC LIMIT 1"
+            f"WHERE {MEANINGFUL_TEXT_SQL} ORDER BY date DESC LIMIT 1"
         ).fetchone()
         if row is not None:
             if not row["body_md"]:
