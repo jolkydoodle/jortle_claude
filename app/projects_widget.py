@@ -921,6 +921,9 @@ class ProjectsWidget(QWidget):
         restored = self.db.restore_project_version(self.current_project_id, version_id)
         if restored is not None:
             restored_content, restored_format = restored
+            version = self.db.get_version(version_id)
+            self.history.rebase_session("project", self.current_project_id, stored_state(
+                restored_content, restored_format, version.content_text if version else ""))
             self.editor.load(restored_content, restored_format)
             self._refresh_meta(self.current_project_id)
             self._refresh_versions(self.current_project_id)
@@ -945,13 +948,10 @@ class ProjectsWidget(QWidget):
                 return False      # the user cancelled leaving the open project
         elif not self.allow_leaving_project():
             return False
-        current = self.db.get_project(project_id)
-        if current is not None and current.content_md.strip():
-            self.db.add_version(project_id, current.content_md, label=label, kind="manual",
-                                content_format=current.content_format,
-                                content_text=current.content_text)
+        self.db.keep_project_before_restore(project_id, label)
         self.db.save_project_content(project_id, html, content_format=fmt or "html",
                                      content_text=plain)
+        self.history.rebase_session("project", project_id, stored_state(html, fmt or "html", plain))
         self.editor.load(html, fmt or "html")
         self._refresh_meta(project_id)
         self._refresh_versions(project_id)

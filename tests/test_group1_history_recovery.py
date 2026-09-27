@@ -366,8 +366,8 @@ dialog._request_restore()
 settle()
 check("restoring it puts the project text back",
       "Paragraph 14" in (db.get_project(project.id).content_text or ""))
-check("the emptied state was kept as a project version first",
-      any(v.label == "Before recovery restore" for v in db.get_project_versions(project.id)))
+check("the emptied state is blank, so it is not kept as a version",
+      not any(v.label == "Before recovery restore" for v in db.get_project_versions(project.id)))
 dialog.close()
 
 print("\n--- [13] the 50% rule counts characters one way (line breaks excluded) ---")
@@ -429,6 +429,221 @@ for lines, expected in ((99, 0), (140, 1)):
     check(f"a project: deleting {lines} of 200 short lines keeps {expected} recovery "
           f"cop{'y' if expected == 1 else 'ies'}", len(cps) == expected, f"{len(cps)}")
 
+print("\n--- [13] a restore starts the session afresh (1R-F5, cause B) ---")
+long_text = "\n".join(f"Long paragraph {i}. " + "Words that were written here. " * 3
+                      for i in range(30))                         # about 3,000 characters
+
+
+def type_at_end(editor_widget, text):
+    edit = editor_widget.text_edit
+    edit.setFocus()
+    cursor = edit.textCursor()
+    cursor.movePosition(QTextCursor.End)
+    edit.setTextCursor(cursor)
+    QTest.keyClicks(edit, text)
+    settle()
+
+
+def entry_checkpoints(date):
+    return [c for c in db.list_recovery_checkpoints() if c.scope == "date" and c.ref == date]
+
+
+def project_checkpoints(pid):
+    return [c for c in db.list_recovery_checkpoints() if c.scope == "project" and c.ref == str(pid)]
+
+
+def store_and_leave(date, text):
+    win._request_date(date)
+    settle()
+    win.editor.text_edit.setPlainText(text)
+    win._save_current_entry()
+    win._request_date("2026-04-30")                   # leaving ends the session
+
+
+win.main_tabs.setCurrentWidget(win.daily_splitter)
+b_date = "2026-04-01"
+store_and_leave(b_date, "A short version.")
+store_and_leave(b_date, long_text)
+win._request_date(b_date)                            # a new session starts from the long text
+settle()
+dialog = EntryHistoryDialog(db, b_date, parent=win)
+dialog.restoreRequested.connect(win._restore_entry_revision)
+short_rev = next(r for r in db.list_entry_revisions(b_date)
+                 if (db.get_entry_revision(r.id).body_text or "").strip() == "A short version.")
+dialog.list.setCurrentRow([r.id for r in db.list_entry_revisions(b_date)].index(short_rev.id))
+dialog._request_restore()
+settle()
+dialog.close()
+check("History restored the short version",
+      (db.get_entry(b_date).body_text or "").strip() == "A short version.")
+type_at_end(win.editor, ".")
+settle(1500)                                          # the real autosave timer
+check("typing after a History restore makes no recovery copy", not entry_checkpoints(b_date),
+      f"{len(entry_checkpoints(b_date))}")
+
+r_date = "2026-04-02"
+store_and_leave(r_date, long_text)
+recovered = db.add_recovery_checkpoint("date", r_date, "<p>Recovered short text.</p>", "html",
+                                       "Recovered short text.", removed_chars=1000)
+win._request_date(r_date)
+settle()
+win._restore_recovery_checkpoint(recovered.id)
+settle()
+type_at_end(win.editor, ".")
+settle(1500)
+check("typing after a Recovery restore makes no new recovery copy",
+      len(entry_checkpoints(r_date)) == 1, f"{len(entry_checkpoints(r_date))}")
+
+p_date = "2026-04-03"
+second_text = "\n".join(f"Another text {i}. " + "Different words entirely here. " * 3 for i in range(40))
+store_and_leave(p_date, long_text)
+store_and_leave(p_date, second_text)              # (replacing it is itself a large deletion)
+db._conn.execute("DELETE FROM recovery_checkpoints WHERE scope='date' AND ref=?", (p_date,))
+db._conn.commit()
+win._request_date(p_date)
+settle()
+target = next(r for r in db.list_entry_revisions(p_date)
+              if "Long paragraph 29" in (db.get_entry_revision(r.id).body_text or ""))
+win._restore_entry_revision(target.id)
+settle()
+type_at_end(win.editor, ".")
+settle(1500)
+check("a restore itself, and typing after it, make no recovery copy", not entry_checkpoints(p_date))
+select_all_delete(win.editor)
+settle(1500)
+cps = entry_checkpoints(p_date)
+check("a large deletion of the restored text is still caught, once",
+      len(cps) == 1 and "Long paragraph 29" in (db.get_recovery_checkpoint(cps[0].id).body_text or ""),
+      f"{len(cps)}")
+
+win.main_tabs.setCurrentWidget(pwid)
+settle()
+
+
+def open_project_afresh(pid):
+    pwid.refresh_project_list(select_id=None)
+    pwid.refresh_project_list(select_id=pid)
+    settle()
+
+
+def new_project(name, text):
+    project = db.create_project(name)
+    pwid.refresh_project_list(select_id=project.id)
+    settle()
+    pwid.editor.text_edit.setPlainText(text)
+    pwid.save_now()
+    return project.id
+
+
+pr = new_project("Restore then type (Recovery)", long_text)
+pr_cp = db.add_recovery_checkpoint("project", str(pr), "<p>Short project text.</p>", "html",
+                                   "Short project text.", removed_chars=1000)
+open_project_afresh(pr)
+win._restore_recovery_checkpoint(pr_cp.id)
+settle()
+type_at_end(pwid.editor, ".")
+pwid.save_now()
+check("a project: typing after a Recovery restore makes no new recovery copy",
+      len(project_checkpoints(pr)) == 1, f"{len(project_checkpoints(pr))}")
+
+pv = new_project("Restore then type (Version History)", "Short project version.")
+short_version = db.add_version(pv, db.get_project(pv).content_md, label="short",
+                               content_format="html", content_text="Short project version.")
+pwid.editor.text_edit.setPlainText(long_text)
+pwid.save_now()
+open_project_afresh(pv)
+pwid._restore_version(short_version.id)
+settle()
+type_at_end(pwid.editor, ".")
+pwid.save_now()
+check("a project: typing after a Version History restore makes no recovery copy",
+      not project_checkpoints(pv), f"{len(project_checkpoints(pv))}")
+
+print("\n--- [13] project restores keep only a real, new state first (1R-F5, cause C) ---")
+
+
+def versions(pid):
+    return db.get_project_versions(pid)
+
+
+blank = new_project("Blank before Recovery restore", long_text)
+open_project_afresh(blank)
+select_all_delete(pwid.editor)
+pwid.save_now()
+check("(setup) blanking the project stored HTML with no text",
+      db.get_project(blank).content_md and not db.get_project(blank).content_text.strip())
+blank_cp = project_checkpoints(blank)[0]
+count = len(versions(blank))
+win._restore_recovery_checkpoint(blank_cp.id)
+settle()
+check("Recovery restore over a blank project keeps no version of the blank state",
+      len(versions(blank)) == count, f"{count} -> {len(versions(blank))}")
+check("...and restores the text", "Long paragraph 29" in db.get_project(blank).content_text)
+
+blank_v = new_project("Blank before Version History restore", long_text)
+long_version = db.add_version(blank_v, db.get_project(blank_v).content_md, label="long",
+                              content_format="html", content_text=long_text)
+open_project_afresh(blank_v)
+select_all_delete(pwid.editor)
+pwid.save_now()
+count = len(versions(blank_v))
+pwid._restore_version(long_version.id)
+settle()
+check("Version History restore over a blank project keeps no version of the blank state",
+      len(versions(blank_v)) == count, f"{count} -> {len(versions(blank_v))}")
+
+dup = new_project("Already a version", "Current text that was saved as a version.")
+current = db.get_project(dup)
+db.add_version(dup, current.content_md, label="saved by the user",
+               content_format=current.content_format, content_text=current.content_text)
+dup_cp = db.add_recovery_checkpoint("project", str(dup), "<p>Older text.</p>", "html",
+                                    "Older text.", removed_chars=1000)
+open_project_afresh(dup)
+count = len(versions(dup))
+win._restore_recovery_checkpoint(dup_cp.id)
+settle()
+check("Recovery restore when the current text is already a version adds no duplicate",
+      len(versions(dup)) == count, f"{count} -> {len(versions(dup))}")
+older = db.add_version(dup, "<p>Oldest text.</p>", label="old", content_format="html",
+                       content_text="Oldest text.")
+current = db.get_project(dup)
+db.add_version(dup, current.content_md, label="saved again",
+               content_format=current.content_format, content_text=current.content_text)
+count = len(versions(dup))
+pwid._restore_version(older.id)
+settle()
+check("Version History restore when the current text is already a version adds no duplicate",
+      len(versions(dup)) == count, f"{count} -> {len(versions(dup))}")
+
+written = new_project("Written, not a version", "Written text that is not a version yet.")
+written_cp = db.add_recovery_checkpoint("project", str(written), "<p>Recovered text.</p>", "html",
+                                        "Recovered text.", removed_chars=1000)
+open_project_afresh(written)
+before_versions = versions(written)
+win._restore_recovery_checkpoint(written_cp.id)
+settle()
+added = [v for v in versions(written) if v.id not in {b.id for b in before_versions}]
+check("Recovery restore over written text that is not a version keeps exactly one version of it",
+      len(added) == 1 and added[0].label == "Before recovery restore"
+      and "not a version yet" in added[0].content_text,
+      f"{[(v.label, v.content_text[:30]) for v in added]}")
+check("...then restores", "Recovered text." in db.get_project(written).content_text)
+written_v = new_project("Written, not a version (Version History)", "First words.")
+first = db.add_version(written_v, db.get_project(written_v).content_md, label="first",
+                       content_format="html", content_text="First words.")
+pwid.editor.text_edit.setPlainText("Second words, never saved as a version.")
+pwid.save_now()
+open_project_afresh(written_v)
+before_versions = versions(written_v)
+pwid._restore_version(first.id)
+settle()
+added = [v for v in versions(written_v) if v.id not in {b.id for b in before_versions}]
+check("Version History restore over written text that is not a version keeps exactly one version",
+      len(added) == 1 and added[0].label == "Before restore"
+      and "never saved as a version" in added[0].content_text,
+      f"{[(v.label, v.content_text[:30]) for v in added]}")
+restored_projects = {written: "Recovered text.", written_v: "First words."}
+
 print("\n--- autosave stays fast on long paragraphs (typing-lag regression) ---")
 import random  # noqa: E402
 import time  # noqa: E402
@@ -463,6 +678,8 @@ win.close()
 settle()
 win = MainWindow()
 check("still listed after restart", len(win.db.list_recovery_checkpoints()) == count and count > 0)
+check("restored projects keep their restored text after restart",
+      all(text in win.db.get_project(pid).content_text for pid, text in restored_projects.items()))
 win.close()
 
 print("\n" + ("ALL PASS" if not failures else f"{len(failures)} FAILURES: {failures}"))

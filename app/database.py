@@ -2588,20 +2588,39 @@ class Database:
             return None
         return self._version_from_row(row)
 
+    def project_version_exists(self, project_id: int, content_md: str) -> bool:
+        """Whether this exact content is already one of the project's versions
+        (compared directly: project versions carry no content hash)."""
+        return self._conn.execute(
+            "SELECT 1 FROM project_versions WHERE project_id=? AND content_md=? LIMIT 1",
+            (project_id, content_md),
+        ).fetchone() is not None
+
+    def keep_project_before_restore(self, project_id: int, label: str) -> bool:
+        """Keeps a project's current content as a version before a restore
+        replaces it — unless it is blank (the one written-vs-blank rule) or
+        already one of its versions. Returns whether a version was added."""
+        current = self.get_project(project_id)
+        if current is None or not document_has_content(current.content_md, current.content_text):
+            return False
+        if self.project_version_exists(project_id, current.content_md):
+            return False
+        self.add_version(project_id, current.content_md, label=label, kind="manual",
+                         content_format=current.content_format, content_text=current.content_text)
+        return True
+
     def restore_project_version(self, project_id: int, version_id: int) -> Optional[tuple[str, str]]:
         """Restore a project's content to an earlier version. The content in
         place right before the restore is itself saved as a manual version
-        first, so restoring never silently discards current work. Returns
+        first (unless it is blank or already a version), so restoring never
+        silently discards current work. Returns
         (content_md, content_format) — the caller (ProjectsWidget) needs the
         format to load the restored content back into the editor correctly
         (RichEditor.load()), since an old version may be in either format."""
         version = self.get_version(version_id)
         if version is None or version.project_id != project_id:
             return None
-        current = self.get_project(project_id)
-        if current and current.content_md.strip():
-            self.add_version(project_id, current.content_md, label="Before restore", kind="manual",
-                              content_format=current.content_format, content_text=current.content_text)
+        self.keep_project_before_restore(project_id, "Before restore")
         self.save_project_content(project_id, version.content_md,
                                    content_format=version.content_format, content_text=version.content_text)
         return version.content_md, version.content_format

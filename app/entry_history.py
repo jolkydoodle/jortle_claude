@@ -237,6 +237,23 @@ class EntryHistory(QObject):
         database under the app is replaced by a restore."""
         self._sessions.clear()
 
+    def rebase_session(self, scope: str, ref, state: _State):
+        """A deliberate restore has just replaced the document with `state`.
+
+        The text it replaced was kept as a version first, so from here on the
+        session compares against the restored state: the next keystroke must
+        not look like a large deletion of the pre-restore text, and a real
+        large deletion of the restored text is caught (one fresh checkpoint).
+        The session itself continues, so leaving still records what it left."""
+        key = (scope, str(ref))
+        session = self._sessions.get(key)
+        if session is None:
+            now = self.clock()
+            self._sessions[key] = _Session(scope, str(ref), state, now, now)
+            return
+        session.baseline = state
+        session.checkpointed = False
+
     def end_session(self, scope: str, ref, reason: str) -> bool:
         """Closes a session; for a daily entry that changed, records the
         state it left behind. Returns whether a revision was made."""
