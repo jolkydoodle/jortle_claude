@@ -281,7 +281,7 @@ settle(1500)
 win._request_date("2026-03-11")                   # a new visit starts from the stored text
 win._request_date(big_date)
 settle()
-prior = len(win.editor.text_edit.toPlainText())
+prior = len(win.editor.text_edit.toPlainText().replace("\n", ""))   # line breaks aren't characters
 select_all_delete(win.editor)
 settle(1500)
 cps = db.list_recovery_checkpoints()
@@ -369,6 +369,65 @@ check("restoring it puts the project text back",
 check("the emptied state was kept as a project version first",
       any(v.label == "Before recovery restore" for v in db.get_project_versions(project.id)))
 dialog.close()
+
+print("\n--- [13] the 50% rule counts characters one way (line breaks excluded) ---")
+# Through the save path, not is_substantial_removal: the prior text used to be
+# measured with its line breaks, the removal without them (1R-F4).
+short_lines = "\n".join(["ab"] * 200)               # 400 characters of text
+
+
+def delete_first_lines(editor_widget, count):
+    edit = editor_widget.text_edit
+    edit.setFocus()
+    cursor = edit.textCursor()
+    cursor.movePosition(QTextCursor.Start)
+    for _ in range(count):
+        cursor.movePosition(QTextCursor.NextBlock, QTextCursor.KeepAnchor)
+    edit.setTextCursor(cursor)
+    QTest.keyClick(edit, Qt.Key_Delete)
+
+
+win.main_tabs.setCurrentWidget(win.daily_splitter)
+for day, lines, expected in ((22, 99, 0), (23, 100, 1), (24, 140, 1), (25, 149, 1)):
+    db._conn.execute("DELETE FROM recovery_checkpoints")
+    db._conn.commit()
+    date = f"2026-03-{day}"
+    win._request_date(date)
+    settle()
+    win.editor.text_edit.setPlainText(short_lines)
+    win._save_current_entry()
+    win._request_date("2026-03-30")                 # a new visit starts from the stored text
+    win._request_date(date)
+    settle()
+    delete_first_lines(win.editor, lines)
+    settle(1500)                                    # the real autosave timer
+    cps = db.list_recovery_checkpoints()
+    check(f"deleting {lines} of 200 short lines ({2 * lines} of 400 characters) keeps "
+          f"{expected} recovery cop{'y' if expected == 1 else 'ies'}", len(cps) == expected,
+          f"{len(cps)}")
+    if lines == 140 and cps:
+        cp = cps[0]
+        check("its numbers use the same count: prior 400, removed 280, remaining 120",
+              (cp.prior_chars, cp.removed_chars, cp.remaining_chars) == (400, 280, 120),
+              f"{(cp.prior_chars, cp.removed_chars, cp.remaining_chars)}")
+
+for lines, expected in ((99, 0), (140, 1)):
+    db._conn.execute("DELETE FROM recovery_checkpoints")
+    db._conn.commit()
+    lined = db.create_project(f"Short lines {lines}")
+    pwid.refresh_project_list(select_id=lined.id)
+    win.main_tabs.setCurrentWidget(pwid)
+    settle()
+    pwid.editor.text_edit.setPlainText(short_lines)
+    pwid.save_now()
+    pwid.refresh_project_list(select_id=None)       # a new session starts from the stored text
+    pwid.refresh_project_list(select_id=lined.id)
+    settle()
+    delete_first_lines(pwid.editor, lines)
+    pwid.save_now()
+    cps = [c for c in db.list_recovery_checkpoints() if c.scope == "project"]
+    check(f"a project: deleting {lines} of 200 short lines keeps {expected} recovery "
+          f"cop{'y' if expected == 1 else 'ies'}", len(cps) == expected, f"{len(cps)}")
 
 print("\n--- autosave stays fast on long paragraphs (typing-lag regression) ---")
 import random  # noqa: E402
