@@ -86,6 +86,7 @@ from pathlib import Path
 from typing import Optional
 
 from . import security
+from .saving import SQL_CONTENT_FUNCTION, content_sql, register_sql_functions
 
 # The folder jortle_claude uses from now on. Platform-conventional location,
 # with the application's own name — see paths.py. Deliberately NOT "Jortle":
@@ -358,6 +359,32 @@ APP_GENERATED_NAMES = {
 NON_USER_TABLES = frozenset({"settings", "day_markers"})
 
 
+def _user_row_condition(conn, table: str) -> str:
+    """Which rows of `table` are evidence of a user, as a WHERE condition.
+
+    Journal entries and Reader's Notes hold documents, and a document is only
+    something a person wrote when the one written-vs-blank rule says so
+    (`saving.document_has_content`, Invariant 6): earlier versions stored
+    blank rows just for viewing a date, and those must not make a folder look
+    like a journal. An entry row also carries the day's marker and title,
+    which a person sets without writing, so those count on their own. Every
+    other table: any row.
+    """
+    if table == "entries":
+        cols = {row[1] for row in conn.execute('PRAGMA table_info("entries")')}
+        # Before round 21 there was no body_text: the stored Markdown is the text.
+        text = "body_text" if "body_text" in cols else "body_md"
+        parts = [content_sql(text, "body_md")]
+        if "tag" in cols:
+            parts.append("COALESCE(tag, '') != ''")
+        if "title" in cols:
+            parts.append(f"{SQL_CONTENT_FUNCTION}(title, NULL) = 1")
+        return " OR ".join(parts)
+    if table == "reader_notes_scoped":
+        return content_sql("content_text", "content")
+    return "1"
+
+
 def has_user_content(path: Path) -> Optional[bool]:
     """Whether this installation's database holds anything a user made.
 
@@ -395,6 +422,7 @@ def has_user_content(path: Path) -> Optional[bool]:
     except sqlite3.Error:
         return None
     try:
+        register_sql_functions(conn)
         tables = {
             row[0] for row in
             conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
@@ -405,11 +433,13 @@ def has_user_content(path: Path) -> Optional[bool]:
         # holding only ToDos looked empty — and so would one holding only
         # version history or recovery copies. Naming the exceptions instead
         # means a store added later counts automatically, which is the safe
-        # direction for this question to fail in.
+        # direction for this question to fail in. Entries and Reader's Notes
+        # count only when written (see _user_row_condition).
         for table in sorted(tables):
             if table in NON_USER_TABLES or table.startswith("sqlite_"):
                 continue
-            if conn.execute(f'SELECT 1 FROM "{table}" LIMIT 1').fetchone() is not None:
+            where = _user_row_condition(conn, table)
+            if conn.execute(f'SELECT 1 FROM "{table}" WHERE {where} LIMIT 1').fetchone() is not None:
                 return True
         return False
     except sqlite3.Error:

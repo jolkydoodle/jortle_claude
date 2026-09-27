@@ -244,7 +244,9 @@ def describe(path: Path, label: str):
 
 
 def entry_lengths(path: Path) -> dict:
-    """{date: characters of writing} for a folder, or {} if unreadable."""
+    """{date: characters of text} for every WRITTEN entry in a folder (the
+    app's written-vs-blank rule, so an image-only entry is in it with 0), or
+    {} if unreadable."""
     db_path = path / dm.DB_FILENAME
     if not db_path.is_file() or db_path.stat().st_size == 0:
         return {}
@@ -255,10 +257,11 @@ def entry_lengths(path: Path) -> dict:
     except (security.SecurityError, *security.DB_ERRORS):
         return {}
     try:
+        register_sql_functions(conn)
         return {
             row[0]: row[1] for row in conn.execute(
-                "SELECT date, LENGTH(TRIM(COALESCE(body_text, ''))) FROM entries")
-            if row[1]
+                "SELECT date, LENGTH(COALESCE(body_text, '')) FROM entries "
+                f"WHERE {MEANINGFUL_TEXT_SQL}")
         }
     except security.DB_ERRORS:
         return {}
@@ -298,8 +301,8 @@ def compare(current: Path, others: list):
             continue
         missing = []
         for date, length in sorted(theirs.items()):
-            here = mine.get(date, 0)
-            if length > here:
+            here = mine.get(date)
+            if here is None or length > here:
                 missing.append((date, length, here))
         if not missing:
             print(f"\n{other.name}\n  nothing here that the current folder does not "
@@ -308,10 +311,11 @@ def compare(current: Path, others: list):
             anything = True
             print(f"\n{other.name}\n  *** HAS WRITING THE CURRENT FOLDER DOES NOT ***")
             for date, length, here in missing:
-                if here:
-                    print(f"    {date}  {length} chars here vs {here} in the current folder")
+                amount = f"{length} chars" if length else "image only"
+                if here is not None:
+                    print(f"    {date}  {amount} here vs {here} chars in the current folder")
                 else:
-                    print(f"    {date}  {length} chars here, ABSENT from the current folder")
+                    print(f"    {date}  {amount} here, ABSENT from the current folder")
             print("  Recover these before deleting this folder:")
             print(f"    python recover_entry.py \"{other / dm.DB_FILENAME}\" <date> --write")
 
