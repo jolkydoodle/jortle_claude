@@ -86,6 +86,7 @@ from pathlib import Path
 from typing import Optional
 
 from . import security
+from .process_lock import ProcessLock
 from .saving import SQL_CONTENT_FUNCTION, content_sql, register_sql_functions
 
 # The folder jortle_claude uses from now on. Platform-conventional location,
@@ -909,46 +910,49 @@ def _resolve() -> MigrationResult:
 # duplicating the work; `_promote` still handles losing the race, because a
 # lock is an optimisation and the classification is the guarantee.
 LOCK_NAME = f"{STAGING_PREFIX}-migration.lock"
-LOCK_STALE_SECONDS = 30 * 60
 LOCK_WAIT_SECONDS = 120
 
 
 @contextmanager
 def _migration_lock(target: Path):
-    lock = target.parent / LOCK_NAME
+    """Held by one process while it migrates. An operating-system lock
+    (`process_lock`): a process that dies — killed, crashed — frees it at once,
+    so the next launch never waits for a migration nobody is running. A live
+    holder (another launch, or `recover_entry.py`) is waited for, as before, and
+    after LOCK_WAIT_SECONDS the migration proceeds anyway: promotion is still
+    safe."""
+    lock = ProcessLock(target.parent / LOCK_NAME)
     held = False
     deadline = time.monotonic() + LOCK_WAIT_SECONDS
     while True:
         try:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            fd = os.open(str(lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            os.write(fd, f"{os.getpid()} {datetime.now().isoformat()}\n".encode())
-            os.close(fd)
-            held = True
-            break
-        except FileExistsError:
-            try:
-                age = time.time() - lock.stat().st_mtime
-            except OSError:
-                continue
-            if age > LOCK_STALE_SECONDS:
-                # Left behind by a process that died. Reclaim it rather than
-                # refusing to start for ever.
-                try:
-                    lock.unlink()
-                except OSError:
-                    pass
-                continue
-            if time.monotonic() > deadline:
-                break       # proceed anyway; promotion is still safe
-            time.sleep(0.5)
+            held = lock.acquire()
         except OSError:
             break           # can't lock here; promotion is still safe
+        if held or time.monotonic() > deadline:
+            break
+        time.sleep(0.5)
+    if held:
+        _remove_abandoned_staging(target.parent)
     try:
         yield
     finally:
         if held:
-            try:
-                lock.unlink()
-            except OSError:
-                pass
+            lock.release()
+
+
+def _remove_abandoned_staging(parent: Path):
+    """Partial copies left by a migration whose process died mid-copy.
+
+    Called only while holding the migration lock, so no live process is
+    copying into any of them. Each is an unfinished copy of a legacy folder
+    that was never touched, so nothing in it exists only there. The copies a
+    failed migration keeps on purpose (`…-migration-failed-…`) are not staging
+    folders and are left alone."""
+    try:
+        leftovers = [p for p in parent.iterdir()
+                     if p.is_dir() and p.name.startswith(f"{STAGING_PREFIX}-migrating-")]
+    except OSError:
+        return
+    for leftover in leftovers:
+        shutil.rmtree(leftover, ignore_errors=True)

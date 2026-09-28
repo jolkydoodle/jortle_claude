@@ -7,13 +7,15 @@ second window. It asks the running one to come to the front, and exits.
 
 Mechanism
 ---------
-* A `QLockFile` next to the data folder — in the per-user application-data
-  root, the same place the migration lock lives — decides who is first. Qt
-  records the owner's process id and host in it, and treats a lock whose
-  owner is no longer running as stale and takes it over. A crash, a kill, or
-  a power cut therefore never locks the user out: the next launch simply
-  proceeds. (A time-based expiry is deliberately NOT used — a long-running
-  first instance must not have its lock declared stale.)
+* An operating-system lock on a file next to the data folder — in the
+  per-user application-data root, the same place the migration lock lives
+  — decides who is first (`process_lock.ProcessLock`). The OS releases it
+  when its process ends, however it ends, so a crash, a kill, or a power
+  cut never locks the user out, and no process id is ever guessed at: an id
+  handed to another program after a crash cannot keep the lock alive (a
+  Qt `QLockFile`, used before, could — from source every owner is called
+  "python"). No time-based expiry either: a long-running first instance
+  must never have its lock declared stale.
 * A `QLocalServer`, named from the same path, lets the second launch reach
   the first and say "activate". If the first instance cannot be reached (it
   is hung, say), the second launch still refuses to open a second window and
@@ -27,10 +29,11 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
-from PySide6.QtCore import QLockFile, QObject, Signal
+from PySide6.QtCore import QObject, Signal
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 
 from .data_migration import APP_DIR_NAME, STAGING_PREFIX, _data_root
+from .process_lock import ProcessLock
 
 ACTIVATE_MESSAGE = b"activate"
 CONNECT_TIMEOUT_MS = 1500
@@ -58,16 +61,14 @@ class SingleInstance(QObject):
         super().__init__(parent)
         self.lock_path = Path(lock_path) if lock_path else default_lock_path()
         self.server_name = server_name_for(self.lock_path)
-        self._lock: QLockFile | None = None
+        self._lock: ProcessLock | None = None
         self._server: QLocalServer | None = None
 
     # ------------------------------------------------------------ primary
     def acquire(self) -> bool:
         """True if this process is now THE instance. Never blocks."""
-        self.lock_path.parent.mkdir(parents=True, exist_ok=True)
-        lock = QLockFile(str(self.lock_path))
-        lock.setStaleLockTime(0)          # stale only when the owner is gone
-        if not lock.tryLock(0):
+        lock = ProcessLock(self.lock_path)
+        if not lock.acquire():
             return False
         self._lock = lock
         self._listen()
@@ -102,7 +103,7 @@ class SingleInstance(QObject):
             self._server.close()
             self._server = None
         if self._lock is not None:
-            self._lock.unlock()
+            self._lock.release()
             self._lock = None
 
     # ---------------------------------------------------------- secondary
