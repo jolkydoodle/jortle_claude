@@ -382,5 +382,137 @@ app_process.kill()
 app_process.wait(timeout=30)
 check("(stopped)", nobody_answers())
 
+print("\n--- a second launch brings the startup window forward (unlock, error boxes) ---")
+# The first instance runs the real jortle_claude.py under a thin wrapper that
+# records every bring_to_front() call (offscreen there is no other way to see
+# inside it). JORTLE_TEST_PASSPHRASE makes the wrapper unlock the unlock
+# window through its own button handler once it has been brought forward.
+RECORDER = (
+    "import os, runpy, sys\n"
+    "sys.path.insert(0, {repo!r})\n"
+    "log, script = sys.argv[1], sys.argv[2]\n"
+    "sys.argv = [script]\n"
+    "import app.single_instance as si\n"
+    "from PySide6.QtCore import QTimer\n"
+    "real = si.bring_to_front\n"
+    "def recording(window):\n"
+    "    with open(log, 'a', encoding='utf-8') as f:\n"
+    "        f.write(type(window).__name__ + '\\n')\n"
+    "    real(window)\n"
+    "    phrase = os.environ.get('JORTLE_TEST_PASSPHRASE')\n"
+    "    if phrase and type(window).__name__ == 'UnlockDialog':\n"
+    "        def unlock():\n"
+    "            window.passphrase.setText(phrase)\n"
+    "            window._try()\n"
+    "        QTimer.singleShot(3000, unlock)\n"
+    "si.bring_to_front = recording\n"
+    "runpy.run_path(script, run_name='__main__')\n"
+).format(repo=str(REPO))
+PASSPHRASE = "correct horse battery staple"
+
+from app import data_migration as dm  # noqa: E402
+from app import security  # noqa: E402
+
+
+def recorded(log, name, timeout=15):
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        if log.exists() and name in log.read_text(encoding="utf-8").split():
+            return True
+        time.sleep(0.2)
+    return False
+
+
+def start_recorded(env, log):
+    return subprocess.Popen([sys.executable, "-c", RECORDER, str(log), str(REPO / "jortle_claude.py")],
+                            env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+
+def startup_root(name):
+    new_root = pathlib.Path(tempfile.mkdtemp(prefix=f"jortle-g1-front-{name}-"))
+    isolation.point_at(new_root)
+    dm.reset_for_tests()
+    env = dict(os.environ)
+    env["QT_QPA_PLATFORM"] = "offscreen"
+    env["PYTHONIOENCODING"] = "utf-8"
+    return new_root, env
+
+
+def encrypted_install():
+    data_dir = dm.resolve_data_dir()
+    from app.database import Database  # noqa: E402
+    Database().close()
+    security.set_up_database_encryption(data_dir, PASSPHRASE)
+    security.session.clear()
+    return data_dir
+
+
+def fingerprint_dir(folder):
+    return sorted((str(p.relative_to(folder)), p.stat().st_size, p.stat().st_mtime_ns)
+                  for p in folder.rglob("*") if p.is_file())
+
+
+# The unlock window, then the main window after unlocking.
+unlock_root, unlock_env = startup_root("unlock")
+unlock_data = encrypted_install()
+log = unlock_root / "front.log"
+first = start_recorded(dict(unlock_env, JORTLE_TEST_PASSPHRASE=PASSPHRASE), log)
+check("(the first instance is up, at its unlock window)", wait_for_server() and first.poll() is None)
+time.sleep(2.0)
+before = fingerprint_dir(unlock_data)                 # as the first instance left it at the window
+second = exit_code(launch_in(unlock_env))
+after_second = fingerprint_dir(unlock_data)
+check("a second launch while the first is at its unlock window exits", second == 0, f"exit {second}")
+check("...and the unlock window is brought forward", recorded(log, "UnlockDialog"),
+      log.read_text(encoding="utf-8") if log.exists() else "(nothing recorded)")
+check("...without the second launch touching the journal (checked before the first unlocks)",
+      after_second == before)
+opened = False
+end = time.monotonic() + 40
+while time.monotonic() < end and not opened:
+    third = exit_code(launch_in(unlock_env))
+    opened = third == 0 and recorded(log, "MainWindow", timeout=2)
+check("after unlocking, the first instance opens its journal, and a later launch brings "
+      "the main window forward", opened and first.poll() is None,
+      log.read_text(encoding="utf-8") if log.exists() else "")
+first.kill()
+first.wait(timeout=30)
+check("(stopped)", nobody_answers())
+
+# The "key file missing" box.
+key_root, key_env = startup_root("missing-key")
+key_data = encrypted_install()
+(key_data / security.DB_KEY_FILE).rename(key_data / "moved-away.age")
+log = key_root / "front.log"
+first = start_recorded(key_env, log)
+check("(the first instance is up, at its 'key file missing' message)",
+      wait_for_server() and first.poll() is None)
+time.sleep(2.0)
+second = exit_code(launch_in(key_env))
+check("a second launch while the first shows 'key file missing' exits, and brings that message "
+      "forward", second == 0 and recorded(log, "QMessageBox"),
+      f"exit {second}; {log.read_text(encoding='utf-8') if log.exists() else '(nothing recorded)'}")
+first.kill()
+first.wait(timeout=30)
+check("(stopped)", nobody_answers())
+
+# The "migration failed" box: a legacy folder whose database is not one.
+failed_root, failed_env = startup_root("migration-failed")
+broken = failed_root / "Jortle"
+broken.mkdir()
+(broken / "journal.db").write_bytes(b"this is not a database" * 100)
+log = failed_root / "front.log"
+first = start_recorded(failed_env, log)
+check("(the first instance is up, at its 'migration failed' message)",
+      wait_for_server() and first.poll() is None)
+time.sleep(3.0)
+second = exit_code(launch_in(failed_env))
+check("a second launch while the first shows 'migration failed' exits, and brings that message "
+      "forward", second == 0 and recorded(log, "QMessageBox"),
+      f"exit {second}; {log.read_text(encoding='utf-8') if log.exists() else '(nothing recorded)'}")
+first.kill()
+first.wait(timeout=30)
+check("(stopped)", nobody_answers())
+
 print("\n" + ("ALL PASS" if not failures else f"{len(failures)} FAILURES: {failures}"))
 sys.exit(1 if failures else 0)

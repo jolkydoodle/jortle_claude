@@ -48,6 +48,19 @@ def main():
             box.exec()
         return 0
 
+    # A second launch asks this one to come to the front at any point from
+    # here on, not only once the main window exists: before that, the window
+    # the user is looking at is the unlock window or a startup error message,
+    # and that is the one to bring forward. (During a migration there is no
+    # window yet, so there is nothing to show.)
+    front = {"window": None}
+
+    def come_to_front():
+        if front["window"] is not None:
+            bring_to_front(front["window"])
+
+    instance.activationRequested.connect(come_to_front)
+
     try:
         data_migration.resolve_data_dir()
     except data_migration.MigrationError as exc:
@@ -60,6 +73,7 @@ def main():
         box.setWindowTitle("jortle_claude — data migration failed")
         box.setText("jortle_claude could not start safely.")
         box.setInformativeText(exc.user_message())
+        front["window"] = box
         box.exec()
         instance.release()
         return 1
@@ -74,7 +88,9 @@ def main():
     if state == "encrypted":
         if not security.unlock_with_plain_keys(data_dir):
             from app.backup_dialog import UnlockDialog
-            if UnlockDialog(data_dir).exec() != UnlockDialog.Accepted:
+            unlock = UnlockDialog(data_dir)
+            front["window"] = unlock
+            if unlock.exec() != UnlockDialog.Accepted:
                 instance.release()
                 return 0
         security.finish_after_unlock(data_dir)
@@ -90,6 +106,7 @@ def main():
             f"({security.DB_KEY_FILE}) is missing. Nothing has been changed. "
             f"{security.recovery_doc_path()} explains how to put a copy of the "
             "key file back (one is kept in the backup folder).")
+        front["window"] = box
         box.exec()
         instance.release()
         return 1
@@ -97,7 +114,7 @@ def main():
     from app.main_window import MainWindow
 
     window = MainWindow()
-    instance.activationRequested.connect(lambda: bring_to_front(window))
+    front["window"] = window
     window.show()
     window.start_background_tasks()
     try:
