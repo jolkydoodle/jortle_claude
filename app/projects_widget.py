@@ -907,13 +907,28 @@ class ProjectsWidget(QWidget):
             return
         self._restore_version(version_id)
 
+    def _settle_before_restore(self) -> bool:
+        """Deals with unsaved edits before a restore replaces the open project.
+
+        With autosave off: the usual Save / Discard / Cancel. With autosave on:
+        edits typed since the last autosave are saved now, as the journal's
+        restore does, so what the restore keeps as a version includes them.
+        Returns False when the user cancelled."""
+        if autosave_enabled(self.db):
+            if self.is_dirty():
+                self._save_content()
+            return True
+        return self.allow_leaving_project()
+
     def _restore_version(self, version_id: int):
         if self.current_project_id is None:
             return
+        if not self._settle_before_restore():
+            return
         confirm = QMessageBox.question(
             self, "Restore version",
-            "Restore this version? Your current text will itself be saved as "
-            "a checkpoint first, so nothing is lost.",
+            "Restore this version? The project's current text will be kept as a "
+            "version first, unless it is empty or already one of its versions.",
             QMessageBox.Yes | QMessageBox.No,
         )
         if confirm != QMessageBox.Yes:
@@ -922,8 +937,9 @@ class ProjectsWidget(QWidget):
         if restored is not None:
             restored_content, restored_format = restored
             version = self.db.get_version(version_id)
-            self.history.rebase_session("project", self.current_project_id, stored_state(
-                restored_content, restored_format, version.content_text if version else ""))
+            if self.history is not None:
+                self.history.rebase_session("project", self.current_project_id, stored_state(
+                    restored_content, restored_format, version.content_text if version else ""))
             self.editor.load(restored_content, restored_format)
             self._refresh_meta(self.current_project_id)
             self._refresh_versions(self.current_project_id)
@@ -946,12 +962,13 @@ class ProjectsWidget(QWidget):
             self.refresh_project_list(select_id=project_id, reveal=True)
             if self.current_project_id != project_id:
                 return False      # the user cancelled leaving the open project
-        elif not self.allow_leaving_project():
+        elif not self._settle_before_restore():
             return False
         self.db.keep_project_before_restore(project_id, label)
         self.db.save_project_content(project_id, html, content_format=fmt or "html",
                                      content_text=plain)
-        self.history.rebase_session("project", project_id, stored_state(html, fmt or "html", plain))
+        if self.history is not None:
+            self.history.rebase_session("project", project_id, stored_state(html, fmt or "html", plain))
         self.editor.load(html, fmt or "html")
         self._refresh_meta(project_id)
         self._refresh_versions(project_id)
