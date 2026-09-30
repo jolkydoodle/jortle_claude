@@ -41,3 +41,24 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
         run: python tests/run_all.py
+
+      # TEMPORARY, branch 1r-ci-fix only (1R-F9, F9-3): never merged into main.
+      - name: Stress test_group1_history_recovery 20 times (windows / 3.13)
+        if: ${{ always() && runner.os == 'Windows' && matrix.python == '3.13' }}
+        env:
+          QT_QPA_PLATFORM: offscreen
+          PYTHONIOENCODING: utf-8
+        shell: bash
+        run: |
+          fails=0
+          for i in $(seq 1 20); do
+            if python tests/test_group1_history_recovery.py > "out_$i.txt" 2>&1; then
+              echo "iteration $i: PASS ($(tail -1 "out_$i.txt"))"
+            else
+              echo "iteration $i: FAIL - full output follows"
+              cat "out_$i.txt"
+              fails=$((fails + 1))
+            fi
+          done
+          echo "failures: $fails of 20"
+          test "$fails" -eq 0
