@@ -1120,7 +1120,7 @@ result = subprocess.run([sys.executable, "-c", probe], capture_output=True, text
 line = [l for l in result.stdout.splitlines() if l.startswith("{")]
 fonts = eval(line[-1]) if line else {}
 check("a new process with 20 pt saved: every widget starts at 20 pt",
-      fonts and set(fonts.values()) == {20}, (fonts, result.stderr[-300:]))
+      fonts and set(fonts.values()) == {20}, (fonts, result.stderr))
 
 
 
@@ -1286,7 +1286,8 @@ run = subprocess.run([sys.executable, str(suite)] if not os.environ.get("G3_FIXE
                      timeout=600, cwd=str(suite.parent))
 check("test_group1_history_recovery passes and prints no bold_btn traceback",
       run.returncode == 0 and "bold_btn" not in run.stdout + run.stderr
-      and "Traceback" not in run.stdout + run.stderr, (run.returncode, run.stderr[-400:]))
+      and "Traceback" not in run.stdout + run.stderr,
+      f"exit {run.returncode}; the child's complete stderr follows:\n{run.stderr}")
 
 print()
 if failures:

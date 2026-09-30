@@ -174,7 +174,7 @@ db.close()
 env = dict(os.environ, PYTHONIOENCODING="utf-8")
 out = subprocess.run([sys.executable, str(REPO / "diagnose_data.py")], capture_output=True,
                      text=True, env=env, timeout=120)
-check("diagnose_data runs on an encrypted install", out.returncode == 0, out.stderr[-300:])
+check("diagnose_data runs on an encrypted install", out.returncode == 0, out.stderr)
 check("...and says it is encrypted and locked",
       "encrypted (SQLCipher)" in out.stdout and "--unlock" in out.stdout, out.stdout[-600:])
 check("...and does not claim the legacy data is missing from it",
@@ -186,7 +186,7 @@ check("diagnose_data --unlock counts the encrypted journal",
 out = subprocess.run([sys.executable, str(REPO / "recover_entry.py"), str(enc.zip_path)],
                      input=PASS + "\n", capture_output=True, text=True, env=env, timeout=120)
 check("recover_entry lists an encrypted backup after the passphrase",
-      "2026-05-05" in out.stdout, out.stdout[-400:] + out.stderr[-400:])
+      "2026-05-05" in out.stdout, out.stdout + out.stderr)
 out = subprocess.run([sys.executable, str(REPO / "recover_entry.py"), str(enc.zip_path)],
                      input="wrong passphrase\n", capture_output=True, text=True, env=env,
                      timeout=120)
@@ -202,7 +202,7 @@ out = subprocess.run([sys.executable, str(REPO / "recover_entry.py"), str(enc.zi
                       "2026-05-05", "--write"], input=PASS + "\n" + PASS + "\n",
                      capture_output=True, text=True, env=env, timeout=120)
 check("recover_entry --write puts an entry back into an encrypted journal",
-      out.returncode == 0, out.stdout[-400:] + out.stderr[-400:])
+      out.returncode == 0, out.stdout + out.stderr)
 security.unlock(target, PASS)
 db = Database()
 check("...which is really there, and the journal is still encrypted",
