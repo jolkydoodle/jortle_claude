@@ -32,6 +32,23 @@ from app.saving import set_autosave_enabled  # noqa: E402
 
 failures = []
 
+# An error raised inside a Qt callback (a slot, a timer) never reaches the code
+# that caused it: Qt hands it to sys.excepthook and carries on, so the process
+# still exits 0. Record every one with its full stack, pass it on to the
+# original hook, and fail at the end (1R-F9, F9-2; FP-9 item 5).
+import traceback  # noqa: E402
+
+qt_slot_errors = []
+_original_excepthook = sys.excepthook
+
+
+def _record_qt_slot_error(kind, value, tb):
+    qt_slot_errors.append("".join(traceback.format_exception(kind, value, tb)))
+    _original_excepthook(kind, value, tb)
+
+
+sys.excepthook = _record_qt_slot_error
+
 
 def check(label, cond, detail=""):
     print(("  PASS  " if cond else "  FAIL  ") + label + (f"  [{detail}]" if detail and not cond else ""))
@@ -881,6 +898,7 @@ check("a ProjectsWidget without history restores from Version History and Recove
       error is None and not slot_errors and seen_titles == ["Restore version"]
       and restored_then == "Then." and db.get_project(lone.id).content_text == "Recovered.",
       f"{error} {slot_errors} {seen_titles} {restored_then!r}")
+bare.stop_timers()          # as MainWindow does on close: its autosave timers share win's database (1R-F9)
 bare.close()
 bare.deleteLater()
 QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.Yes)
@@ -923,6 +941,10 @@ check("still listed after restart", len(win.db.list_recovery_checkpoints()) == c
 check("restored projects keep their restored text after restart",
       all(text in win.db.get_project(pid).content_text for pid, text in restored_projects.items()))
 win.close()
+app.processEvents()                                  # let anything still queued run now
+sys.excepthook = _original_excepthook
+check("no uncaught error inside a Qt slot during the whole run", not qt_slot_errors,
+      f"{len(qt_slot_errors)} error(s); full stacks:\n" + "\n".join(qt_slot_errors))
 
 print("\n" + ("ALL PASS" if not failures else f"{len(failures)} FAILURES: {failures}"))
 sys.exit(1 if failures else 0)

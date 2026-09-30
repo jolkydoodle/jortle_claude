@@ -467,7 +467,7 @@ script = (
 out = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True,
                      env=dict(os.environ), timeout=120)
 check("a new process opens the encrypted journal with the passphrase",
-      out.stdout.strip() == "from elsewhere", out.stderr[-300:])
+      out.stdout.strip() == "from elsewhere", out.stderr)
 
 print("\n--- an I/O error at open is retried, then worded as an I/O error ---")
 # Windows releases a killed process's file locks a moment after it has ended
