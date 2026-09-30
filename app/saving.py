@@ -61,7 +61,7 @@ def ensure_autosave_default(db) -> bool:
     has_history = False
     try:
         row = db._conn.execute(
-            "SELECT 1 FROM entries WHERE TRIM(COALESCE(body_text, '')) != '' LIMIT 1"
+            f"SELECT 1 FROM entries WHERE {MEANINGFUL_TEXT_SQL} LIMIT 1"
         ).fetchone()
         has_history = row is not None
     except Exception:  # noqa: BLE001 — a brand-new database simply has none

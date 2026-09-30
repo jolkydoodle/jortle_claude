@@ -431,16 +431,19 @@ copies them. They are never deleted automatically. These are not backups —
 they protect against one big accidental deletion; File → Export Backup
 protects against everything else.
 
-If you try to leave an entry with unsaved changes — switching days,
-switching tabs, or closing the app — you get **Save / Discard / Cancel**.
-Cancel puts you back where you were, with the edit still there. Nothing is
-thrown away without you saying so.
+If you try to leave an entry or a project with unsaved changes — switching
+days or projects, restoring a version or a backup, or closing the app — you
+get **Save / Discard / Cancel**. Cancel puts you back where you were, with
+the edit still there. Switching tabs doesn't ask: both editors keep their
+unsaved text while you look at the other tab. (One exception still: the
+Reader's Notes panes save an edited note when you move on even with
+autosave off; they get their own Save / Cancel in a later version.)
 
 **Undo is per document and genuinely deep.** Ctrl+Z steps back through
-your typing and your formatting, and it is no longer disturbed by saving,
-by resizing the window, or by changing the font in Settings — those used
-to quietly poison the undo history, because saving edited the live
-document to do its work. Saving now works on a copy. Undo does not cross
+your typing and your formatting, and it is not disturbed by resizing the
+window or by changing the font in Settings. Saving works on a copy, with
+one known exception: when a save turns a newly typed date into a link, that
+linking becomes an undo step of its own (to be fixed in a later version). Undo does not cross
 between documents: your journal entry, your Reader's Notes and each
 project each have their own history, and switching days starts a fresh one
 rather than offering to undo its way into yesterday.
@@ -1122,6 +1125,25 @@ scrolling are all untouched.
 * A pane dragged shut stays shut; month panes are always wide enough for
   their grid; the saved interface font applies fully at startup.
 * Project folders remember whether they are open or closed.
+
+See `CHANGELOG.md` for the full list.
+
+## What changed in Group 1R (an audit of Group 1, on Windows)
+
+* **Older installations migrate reliably.** Folders from before the
+  rich-text editor migrate again; blank rows left by older versions no
+  longer confuse the migration; an interrupted migration no longer holds up
+  the next launch for two minutes, and its half-finished copy is removed.
+* **One copy runs at a time, more robustly.** A crash never locks you out,
+  and a second launch brings forward whatever the first is showing — the
+  unlock window or a startup message included.
+* **Restores never lose typed text.** Restoring a project version asks
+  Save / Discard / Cancel with autosave off; with autosave on, what you
+  just typed is kept as a version first. Typing after a restore no longer
+  creates a recovery copy, and project restores no longer keep blank or
+  duplicate versions.
+* **Recovery copies** catch a large deletion from a text of many short lines
+  at the stated threshold, and File → Recovery's totals add up.
 
 See `CHANGELOG.md` for the full list.
 

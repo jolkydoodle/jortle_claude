@@ -8,6 +8,50 @@ Changes from before the `jortle_claude` rename (the Jortle rounds, the
 redesign, the backup/restore fixes and the bug hunt) are described in the
 "What changed …" sections of `README.md`.
 
+## Group 1R — 2026-09-28
+
+An independent audit of Group 1 (entries, saving, version history,
+recovery, single instance, migration), run on Windows, and repairs for
+everything it found except three items already planned for later groups.
+
+### Moving to jortle_claude from an older installation
+- A `Jortle` or `DailyJournal` folder from before the rich-text editor
+  (round 21) migrates again; before, the app refused to start.
+- A newer blank row in an old journal no longer makes the migration think
+  the journal is damaged and refuse to start.
+- A folder whose only entries or Reader's Notes are blank (left by older
+  versions just for looking at a date) no longer counts as a journal of its
+  own; a day with only a Day Marker or a title still does.
+- If a migration is interrupted (the app killed or crashing mid-copy), the
+  next launch continues straight away instead of waiting two minutes, and
+  the half-finished copy is removed.
+
+### Starting the app
+- After a crash or a forced close, the next launch always starts, even if
+  Windows has handed the old process number to another program.
+- Launching the app while it is showing its unlock window, or its "key file
+  missing" or "migration failed" message, brings that window to the front.
+
+### Version history and recovery
+- A large deletion from a text made of many short lines is now kept as a
+  recovery copy at the stated threshold (half of the text); File → Recovery
+  shows totals that add up.
+- Typing after restoring a version or a recovery copy no longer creates a
+  recovery copy of the text you just replaced (it is already a version).
+- Restoring a project (from File → Recovery or its version list) no longer
+  keeps a version of a blank project or a second copy of a version you
+  already saved.
+- Restoring a project version with autosave off now asks Save / Discard /
+  Cancel first, like everything else; with autosave on, text typed just
+  before a restore is saved and kept as the "before" version. The
+  confirmation no longer promises that nothing can be lost.
+
+### Tools
+- `diagnose_data.py` counts an entry that holds only a photo as writing,
+  and no longer reports blank rows as writing another folder is missing.
+- For upgraded installations, the one-time autosave default now looks at
+  real writing, not at rows that are only blank.
+
 ## Group 3 fixes — 2026-09-25
 
 Fixes for the problems found by the independent re-audit of Group 3, plus

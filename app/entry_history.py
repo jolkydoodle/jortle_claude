@@ -85,6 +85,13 @@ def _paragraphs(plain: str) -> list:
     return (plain or "").split("\n")
 
 
+def text_chars(plain: str) -> int:
+    """Characters of text, counted the way `removal` counts them: line breaks
+    are not characters. The 50% rule and a checkpoint's recorded totals use
+    this, so a removal is always compared with a prior size in the same unit."""
+    return sum(len(p) for p in _paragraphs(plain))
+
+
 def paragraph_count(plain: str) -> int:
     """Paragraphs that hold something — blank lines are not counted."""
     return sum(1 for p in _paragraphs(plain) if p.strip())
@@ -230,6 +237,23 @@ class EntryHistory(QObject):
         database under the app is replaced by a restore."""
         self._sessions.clear()
 
+    def rebase_session(self, scope: str, ref, state: _State):
+        """A deliberate restore has just replaced the document with `state`.
+
+        The text it replaced was kept as a version first, so from here on the
+        session compares against the restored state: the next keystroke must
+        not look like a large deletion of the pre-restore text, and a real
+        large deletion of the restored text is caught (one fresh checkpoint).
+        The session itself continues, so leaving still records what it left."""
+        key = (scope, str(ref))
+        session = self._sessions.get(key)
+        if session is None:
+            now = self.clock()
+            self._sessions[key] = _Session(scope, str(ref), state, now, now)
+            return
+        session.baseline = state
+        session.checkpointed = False
+
     def end_session(self, scope: str, ref, reason: str) -> bool:
         """Closes a session; for a daily entry that changed, records the
         state it left behind. Returns whether a revision was made."""
@@ -315,7 +339,7 @@ class EntryHistory(QObject):
         candidates = [s for s in (stored, session.baseline) if s is not None and s.written]
         best = None
         for state in candidates:
-            prior = len(state.plain)
+            prior = text_chars(state.plain)
             # Cheap upper bound first: ordinary typing stops here.
             upper, _ = removal(state.plain, new_plain, exact=False)
             if not is_substantial_removal(prior, upper):
@@ -333,10 +357,10 @@ class EntryHistory(QObject):
             return
         self.db.add_recovery_checkpoint(
             session.scope, session.ref, state.html, state.fmt, state.plain,
-            title=title or state.title, prior_chars=len(state.plain),
+            title=title or state.title, prior_chars=text_chars(state.plain),
             prior_paragraphs=paragraph_count(state.plain),
             removed_chars=removed_chars, removed_paragraphs=removed_paras,
-            remaining_chars=len((new_plain or "").strip()))
+            remaining_chars=text_chars(new_plain))
         session.checkpointed = True
 
 

@@ -66,7 +66,9 @@ def select_all_delete(editor_widget):
     settle()
 
 
-# Every confirmation in the dialogs answers Yes.
+# Every confirmation in the dialogs answers Yes (the 1R-F6 section puts the
+# real one back and clicks it).
+REAL_QUESTION = QMessageBox.question
 QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.Yes)
 QMessageBox.warning = staticmethod(lambda *a, **k: QMessageBox.Yes)
 
@@ -281,7 +283,7 @@ settle(1500)
 win._request_date("2026-03-11")                   # a new visit starts from the stored text
 win._request_date(big_date)
 settle()
-prior = len(win.editor.text_edit.toPlainText())
+prior = len(win.editor.text_edit.toPlainText().replace("\n", ""))   # line breaks aren't characters
 select_all_delete(win.editor)
 settle(1500)
 cps = db.list_recovery_checkpoints()
@@ -366,9 +368,523 @@ dialog._request_restore()
 settle()
 check("restoring it puts the project text back",
       "Paragraph 14" in (db.get_project(project.id).content_text or ""))
-check("the emptied state was kept as a project version first",
-      any(v.label == "Before recovery restore" for v in db.get_project_versions(project.id)))
+check("the emptied state is blank, so it is not kept as a version",
+      not any(v.label == "Before recovery restore" for v in db.get_project_versions(project.id)))
 dialog.close()
+
+print("\n--- [13] the 50% rule counts characters one way (line breaks excluded) ---")
+# Through the save path, not is_substantial_removal: the prior text used to be
+# measured with its line breaks, the removal without them (1R-F4).
+short_lines = "\n".join(["ab"] * 200)               # 400 characters of text
+
+
+def delete_first_lines(editor_widget, count):
+    edit = editor_widget.text_edit
+    edit.setFocus()
+    cursor = edit.textCursor()
+    cursor.movePosition(QTextCursor.Start)
+    for _ in range(count):
+        cursor.movePosition(QTextCursor.NextBlock, QTextCursor.KeepAnchor)
+    edit.setTextCursor(cursor)
+    QTest.keyClick(edit, Qt.Key_Delete)
+
+
+win.main_tabs.setCurrentWidget(win.daily_splitter)
+for day, lines, expected in ((22, 99, 0), (23, 100, 1), (24, 140, 1), (25, 149, 1)):
+    db._conn.execute("DELETE FROM recovery_checkpoints")
+    db._conn.commit()
+    date = f"2026-03-{day}"
+    win._request_date(date)
+    settle()
+    win.editor.text_edit.setPlainText(short_lines)
+    win._save_current_entry()
+    win._request_date("2026-03-30")                 # a new visit starts from the stored text
+    win._request_date(date)
+    settle()
+    delete_first_lines(win.editor, lines)
+    settle(1500)                                    # the real autosave timer
+    cps = db.list_recovery_checkpoints()
+    check(f"deleting {lines} of 200 short lines ({2 * lines} of 400 characters) keeps "
+          f"{expected} recovery cop{'y' if expected == 1 else 'ies'}", len(cps) == expected,
+          f"{len(cps)}")
+    if lines == 140 and cps:
+        cp = cps[0]
+        check("its numbers use the same count: prior 400, removed 280, remaining 120",
+              (cp.prior_chars, cp.removed_chars, cp.remaining_chars) == (400, 280, 120),
+              f"{(cp.prior_chars, cp.removed_chars, cp.remaining_chars)}")
+
+for lines, expected in ((99, 0), (140, 1)):
+    db._conn.execute("DELETE FROM recovery_checkpoints")
+    db._conn.commit()
+    lined = db.create_project(f"Short lines {lines}")
+    pwid.refresh_project_list(select_id=lined.id)
+    win.main_tabs.setCurrentWidget(pwid)
+    settle()
+    pwid.editor.text_edit.setPlainText(short_lines)
+    pwid.save_now()
+    pwid.refresh_project_list(select_id=None)       # a new session starts from the stored text
+    pwid.refresh_project_list(select_id=lined.id)
+    settle()
+    delete_first_lines(pwid.editor, lines)
+    pwid.save_now()
+    cps = [c for c in db.list_recovery_checkpoints() if c.scope == "project"]
+    check(f"a project: deleting {lines} of 200 short lines keeps {expected} recovery "
+          f"cop{'y' if expected == 1 else 'ies'}", len(cps) == expected, f"{len(cps)}")
+
+print("\n--- [13] a restore starts the session afresh (1R-F5, cause B) ---")
+long_text = "\n".join(f"Long paragraph {i}. " + "Words that were written here. " * 3
+                      for i in range(30))                         # about 3,000 characters
+
+
+def type_at_end(editor_widget, text):
+    edit = editor_widget.text_edit
+    edit.setFocus()
+    cursor = edit.textCursor()
+    cursor.movePosition(QTextCursor.End)
+    edit.setTextCursor(cursor)
+    QTest.keyClicks(edit, text)
+    settle()
+
+
+def entry_checkpoints(date):
+    return [c for c in db.list_recovery_checkpoints() if c.scope == "date" and c.ref == date]
+
+
+def project_checkpoints(pid):
+    return [c for c in db.list_recovery_checkpoints() if c.scope == "project" and c.ref == str(pid)]
+
+
+def store_and_leave(date, text):
+    win._request_date(date)
+    settle()
+    win.editor.text_edit.setPlainText(text)
+    win._save_current_entry()
+    win._request_date("2026-04-30")                   # leaving ends the session
+
+
+win.main_tabs.setCurrentWidget(win.daily_splitter)
+b_date = "2026-04-01"
+store_and_leave(b_date, "A short version.")
+store_and_leave(b_date, long_text)
+win._request_date(b_date)                            # a new session starts from the long text
+settle()
+dialog = EntryHistoryDialog(db, b_date, parent=win)
+dialog.restoreRequested.connect(win._restore_entry_revision)
+short_rev = next(r for r in db.list_entry_revisions(b_date)
+                 if (db.get_entry_revision(r.id).body_text or "").strip() == "A short version.")
+dialog.list.setCurrentRow([r.id for r in db.list_entry_revisions(b_date)].index(short_rev.id))
+dialog._request_restore()
+settle()
+dialog.close()
+check("History restored the short version",
+      (db.get_entry(b_date).body_text or "").strip() == "A short version.")
+type_at_end(win.editor, ".")
+settle(1500)                                          # the real autosave timer
+check("typing after a History restore makes no recovery copy", not entry_checkpoints(b_date),
+      f"{len(entry_checkpoints(b_date))}")
+
+r_date = "2026-04-02"
+store_and_leave(r_date, long_text)
+recovered = db.add_recovery_checkpoint("date", r_date, "<p>Recovered short text.</p>", "html",
+                                       "Recovered short text.", removed_chars=1000)
+win._request_date(r_date)
+settle()
+win._restore_recovery_checkpoint(recovered.id)
+settle()
+type_at_end(win.editor, ".")
+settle(1500)
+check("typing after a Recovery restore makes no new recovery copy",
+      len(entry_checkpoints(r_date)) == 1, f"{len(entry_checkpoints(r_date))}")
+
+p_date = "2026-04-03"
+second_text = "\n".join(f"Another text {i}. " + "Different words entirely here. " * 3 for i in range(40))
+store_and_leave(p_date, long_text)
+store_and_leave(p_date, second_text)              # (replacing it is itself a large deletion)
+db._conn.execute("DELETE FROM recovery_checkpoints WHERE scope='date' AND ref=?", (p_date,))
+db._conn.commit()
+win._request_date(p_date)
+settle()
+target = next(r for r in db.list_entry_revisions(p_date)
+              if "Long paragraph 29" in (db.get_entry_revision(r.id).body_text or ""))
+win._restore_entry_revision(target.id)
+settle()
+type_at_end(win.editor, ".")
+settle(1500)
+check("a restore itself, and typing after it, make no recovery copy", not entry_checkpoints(p_date))
+select_all_delete(win.editor)
+settle(1500)
+cps = entry_checkpoints(p_date)
+check("a large deletion of the restored text is still caught, once",
+      len(cps) == 1 and "Long paragraph 29" in (db.get_recovery_checkpoint(cps[0].id).body_text or ""),
+      f"{len(cps)}")
+
+win.main_tabs.setCurrentWidget(pwid)
+settle()
+
+
+def open_project_afresh(pid):
+    pwid.refresh_project_list(select_id=None)
+    pwid.refresh_project_list(select_id=pid)
+    settle()
+
+
+def new_project(name, text):
+    project = db.create_project(name)
+    pwid.refresh_project_list(select_id=project.id)
+    settle()
+    pwid.editor.text_edit.setPlainText(text)
+    pwid.save_now()
+    return project.id
+
+
+pr = new_project("Restore then type (Recovery)", long_text)
+pr_cp = db.add_recovery_checkpoint("project", str(pr), "<p>Short project text.</p>", "html",
+                                   "Short project text.", removed_chars=1000)
+open_project_afresh(pr)
+win._restore_recovery_checkpoint(pr_cp.id)
+settle()
+type_at_end(pwid.editor, ".")
+pwid.save_now()
+check("a project: typing after a Recovery restore makes no new recovery copy",
+      len(project_checkpoints(pr)) == 1, f"{len(project_checkpoints(pr))}")
+
+pv = new_project("Restore then type (Version History)", "Short project version.")
+short_version = db.add_version(pv, db.get_project(pv).content_md, label="short",
+                               content_format="html", content_text="Short project version.")
+pwid.editor.text_edit.setPlainText(long_text)
+pwid.save_now()
+open_project_afresh(pv)
+pwid._restore_version(short_version.id)
+settle()
+type_at_end(pwid.editor, ".")
+pwid.save_now()
+check("a project: typing after a Version History restore makes no recovery copy",
+      not project_checkpoints(pv), f"{len(project_checkpoints(pv))}")
+
+print("\n--- [13] project restores keep only a real, new state first (1R-F5, cause C) ---")
+
+
+def versions(pid):
+    return db.get_project_versions(pid)
+
+
+blank = new_project("Blank before Recovery restore", long_text)
+open_project_afresh(blank)
+select_all_delete(pwid.editor)
+pwid.save_now()
+check("(setup) blanking the project stored HTML with no text",
+      db.get_project(blank).content_md and not db.get_project(blank).content_text.strip())
+blank_cp = project_checkpoints(blank)[0]
+count = len(versions(blank))
+win._restore_recovery_checkpoint(blank_cp.id)
+settle()
+check("Recovery restore over a blank project keeps no version of the blank state",
+      len(versions(blank)) == count, f"{count} -> {len(versions(blank))}")
+check("...and restores the text", "Long paragraph 29" in db.get_project(blank).content_text)
+
+blank_v = new_project("Blank before Version History restore", long_text)
+long_version = db.add_version(blank_v, db.get_project(blank_v).content_md, label="long",
+                              content_format="html", content_text=long_text)
+open_project_afresh(blank_v)
+select_all_delete(pwid.editor)
+pwid.save_now()
+count = len(versions(blank_v))
+pwid._restore_version(long_version.id)
+settle()
+check("Version History restore over a blank project keeps no version of the blank state",
+      len(versions(blank_v)) == count, f"{count} -> {len(versions(blank_v))}")
+
+dup = new_project("Already a version", "Current text that was saved as a version.")
+current = db.get_project(dup)
+db.add_version(dup, current.content_md, label="saved by the user",
+               content_format=current.content_format, content_text=current.content_text)
+dup_cp = db.add_recovery_checkpoint("project", str(dup), "<p>Older text.</p>", "html",
+                                    "Older text.", removed_chars=1000)
+open_project_afresh(dup)
+count = len(versions(dup))
+win._restore_recovery_checkpoint(dup_cp.id)
+settle()
+check("Recovery restore when the current text is already a version adds no duplicate",
+      len(versions(dup)) == count, f"{count} -> {len(versions(dup))}")
+older = db.add_version(dup, "<p>Oldest text.</p>", label="old", content_format="html",
+                       content_text="Oldest text.")
+current = db.get_project(dup)
+db.add_version(dup, current.content_md, label="saved again",
+               content_format=current.content_format, content_text=current.content_text)
+count = len(versions(dup))
+pwid._restore_version(older.id)
+settle()
+check("Version History restore when the current text is already a version adds no duplicate",
+      len(versions(dup)) == count, f"{count} -> {len(versions(dup))}")
+
+written = new_project("Written, not a version", "Written text that is not a version yet.")
+written_cp = db.add_recovery_checkpoint("project", str(written), "<p>Recovered text.</p>", "html",
+                                        "Recovered text.", removed_chars=1000)
+open_project_afresh(written)
+before_versions = versions(written)
+win._restore_recovery_checkpoint(written_cp.id)
+settle()
+added = [v for v in versions(written) if v.id not in {b.id for b in before_versions}]
+check("Recovery restore over written text that is not a version keeps exactly one version of it",
+      len(added) == 1 and added[0].label == "Before recovery restore"
+      and "not a version yet" in added[0].content_text,
+      f"{[(v.label, v.content_text[:30]) for v in added]}")
+check("...then restores", "Recovered text." in db.get_project(written).content_text)
+written_v = new_project("Written, not a version (Version History)", "First words.")
+first = db.add_version(written_v, db.get_project(written_v).content_md, label="first",
+                       content_format="html", content_text="First words.")
+pwid.editor.text_edit.setPlainText("Second words, never saved as a version.")
+pwid.save_now()
+open_project_afresh(written_v)
+before_versions = versions(written_v)
+pwid._restore_version(first.id)
+settle()
+added = [v for v in versions(written_v) if v.id not in {b.id for b in before_versions}]
+check("Version History restore over written text that is not a version keeps exactly one version",
+      len(added) == 1 and added[0].label == "Before restore"
+      and "never saved as a version" in added[0].content_text,
+      f"{[(v.label, v.content_text[:30]) for v in added]}")
+restored_projects = {written: "Recovered text.", written_v: "First words."}
+
+print("\n--- [13] project restores never lose typed text (1R-F6) ---")
+# Driven as the user does it: the version list, Restore Selected, File →
+# Recovery from the menu bar, and every question answered by clicking its
+# button. Nothing about the questions is stubbed here.
+import time  # noqa: E402
+
+from PySide6.QtCore import QTimer  # noqa: E402
+from PySide6.QtWidgets import QAbstractButton, QLineEdit, QPushButton  # noqa: E402
+
+QMessageBox.question = REAL_QUESTION
+
+
+def click_button(widget, text):
+    for button in widget.findChildren(QAbstractButton):
+        if button.text().replace("&", "") == text and button.isVisible():
+            QTest.mouseClick(button, Qt.LeftButton)
+            return True
+    raise AssertionError(f"no button {text!r} in {widget.windowTitle()!r}")
+
+
+class Answerer:
+    """Answers the modal dialogs that appear, in order, by clicking what the
+    script says for each title; records every dialog it saw."""
+
+    def __init__(self, script):
+        self.script = dict(script)
+        self.seen = []
+        self._done = []
+        self.timer = QTimer()
+        self.timer.timeout.connect(self._poll)
+        self.timer.start(20)
+        self.forced = []
+        self._last = time.monotonic()
+
+    def _poll(self):
+        # Visible modal windows, found directly (offscreen Qt does not always
+        # report the active modal widget after a menu has been used). Only one
+        # not answered yet is acted on; their order in the list means nothing.
+        open_modal = [w for w in QApplication.topLevelWidgets() if w.isVisible() and w.isModal()]
+        new = [w for w in open_modal if not any(w is d for d in self._done)]
+        if not new:
+            if open_modal and time.monotonic() - self._last > 10:   # never hang the suite
+                for w in open_modal:
+                    self.forced.append(w.windowTitle())
+                    self.seen.append(("(forced closed)", w.windowTitle()))
+                    w.reject()
+            return
+        dialog = new[-1]
+        self._done.append(dialog)
+        self._last = time.monotonic()
+        title = dialog.windowTitle()
+        text = (dialog.text() + " " + dialog.informativeText()) if isinstance(dialog, QMessageBox) else ""
+        self.seen.append((title, text))
+        action = self.script.get(title)
+        # Act after this timer slot returns: an answer can open the next dialog,
+        # and Qt does not fire a timer again while its own slot is running.
+        if action is None:
+            QTimer.singleShot(0, dialog.reject)   # unexpected: recorded, then dismissed
+        elif callable(action):
+            QTimer.singleShot(0, lambda: action(dialog))
+        else:
+            QTimer.singleShot(0, lambda: click_button(dialog, action))
+
+    def titles(self):
+        return [title for title, _ in self.seen]
+
+    def stop(self):
+        self.timer.stop()
+
+
+def answering(script, do):
+    answerer = Answerer(script)
+    try:
+        do()
+        settle(100)
+    finally:
+        answerer.stop()
+    if answerer.forced:                   # a user could not have done that
+        check(f"every dialog was answered by its own buttons (forced closed: {answerer.forced})", False,
+              f"{answerer.titles()}")
+    return answerer
+
+
+def version_row_click(widget, version_id):
+    lst = widget.version_list
+    item = next(lst.item(i) for i in range(lst.count()) if lst.item(i).data(Qt.UserRole) == version_id)
+    lst.scrollToItem(item)
+    QTest.mouseClick(lst.viewport(), Qt.LeftButton, Qt.NoModifier, lst.visualItemRect(item).center())
+    settle()
+
+
+def restore_selected(widget):
+    button = next(b for b in widget.findChildren(QPushButton) if b.text() == "Restore Selected")
+    QTest.mouseClick(button, Qt.LeftButton)
+
+
+def save_version_button(label):
+    def fill(dialog):
+        QTest.keyClicks(dialog.findChild(QLineEdit), label)
+        click_button(dialog, "OK")
+    button = next(b for b in pwid.findChildren(QPushButton) if b.text() == "Save Version…")
+    answering({"Save Version": fill}, lambda: QTest.mouseClick(button, Qt.LeftButton))
+    return max(versions(pwid.current_project_id), key=lambda v: v.id)
+
+
+def file_recovery(cp_id, then):
+    """File → Recovery… by clicking the menu bar, then the copy, then Restore…"""
+    def pick(dialog):
+        lst = dialog.list
+        row = next(i for i in range(lst.count()) if lst.item(i).data(Qt.UserRole) == cp_id)
+        QTest.mouseClick(lst.viewport(), Qt.LeftButton, Qt.NoModifier,
+                         lst.visualItemRect(lst.item(row)).center())
+        click_button(dialog, "Restore…")
+    bar = win.menuBar()
+    file_action = next(a for a in bar.actions() if a.text().replace("&", "") == "File")
+
+    def do():
+        QTest.mouseClick(bar, Qt.LeftButton, Qt.NoModifier, bar.actionGeometry(file_action).center())
+        settle()
+        menu = file_action.menu()
+        QTest.mouseClick(menu, Qt.LeftButton, Qt.NoModifier,
+                         menu.actionGeometry(win.recovery_action).center())
+    return answering(dict({"Recovery": pick, "Restore recovered text": "Yes"}, **then), do)
+
+
+def typed_project(name, words):
+    project = db.create_project(name)
+    # Leaving a project Cancel left with unsaved edits asks again: drop them.
+    answering({"Unsaved changes": "Discard"},
+              lambda: pwid.refresh_project_list(select_id=project.id))
+    type_at_end(pwid.editor, words)
+    pwid.save_now()
+    return project.id
+
+
+def version_texts(pid):
+    return [(v.label, v.content_text) for v in versions(pid)]
+
+
+win.activateWindow()
+set_autosave_enabled(db, False)
+win._sync_autosave_widgets()
+confirmations = []
+for choice in ("Cancel", "Discard", "Save"):
+    pid = typed_project(f"Unsaved edits, {choice}", "Saved text.")
+    old = save_version_button("old")
+    type_at_end(pwid.editor, " Newer saved text.")
+    pwid.save_now()
+    type_at_end(pwid.editor, " UNSAVED TAIL")
+    before = (db.get_project(pid).content_md, version_texts(pid))
+    version_row_click(pwid, old.id)
+    seen = answering({"Unsaved changes": choice, "Restore version": "Yes"}, lambda: restore_selected(pwid))
+    confirmations += [text for title, text in seen.seen if title == "Restore version"]
+    expected = ["Unsaved changes"] if choice == "Cancel" else ["Unsaved changes", "Restore version"]
+    check(f"autosave off, unsaved edits, {choice}: Save/Discard/Cancel is asked, before the confirmation",
+          seen.titles() == expected, f"{seen.titles()}")
+    if choice == "Cancel":
+        check("Cancel: nothing restored, database and versions unchanged, edits still in the editor",
+              (db.get_project(pid).content_md, version_texts(pid)) == before
+              and "UNSAVED TAIL" in pwid.editor.text_edit.toPlainText())
+    elif choice == "Discard":
+        check("Discard: asked first, then the edits are dropped and the version is restored",
+              seen.titles()[:1] == ["Unsaved changes"]
+              and db.get_project(pid).content_text.strip() == "Saved text."
+              and not any("UNSAVED TAIL" in t for _, t in version_texts(pid))
+              and "UNSAVED TAIL" not in pwid.editor.text_edit.toPlainText())
+    else:
+        check("Save: the edits are stored and kept as the 'Before restore' version, then restored",
+              db.get_project(pid).content_text.strip() == "Saved text."
+              and any(label == "Before restore" and "UNSAVED TAIL" in t
+                      for label, t in version_texts(pid)), f"{version_texts(pid)}")
+check("the confirmation no longer claims nothing is lost, and says what is kept",
+      confirmations and all("nothing is lost" not in t
+                            and "unless it is empty or already one of its versions" in t
+                            for t in confirmations), f"{confirmations}")
+
+set_autosave_enabled(db, True)
+win._sync_autosave_widgets()
+typed_v = typed_project("Typed just before a Version History restore", "Saved words.")
+first_v = save_version_button("first")
+type_at_end(pwid.editor, " TYPED JUST NOW")
+# The restore comes inside the 1.5 s before the autosave fires. Pausing the
+# timer makes that true however loaded the machine is.
+pwid._autosave_timer.stop()
+not_yet_saved = "TYPED JUST NOW" not in db.get_project(typed_v).content_text
+version_row_click(pwid, first_v.id)
+seen = answering({"Restore version": "Yes"}, lambda: restore_selected(pwid))
+check("autosave on: text typed just before a Version History restore is kept as the 'before' version",
+      not_yet_saved and seen.titles() == ["Restore version"]
+      and any(label == "Before restore" and "TYPED JUST NOW" in t for label, t in version_texts(typed_v)),
+      f"{seen.titles()} {version_texts(typed_v)}")
+typed_r = typed_project("Typed just before a Recovery restore", "Saved words.")
+typed_cp = db.add_recovery_checkpoint("project", str(typed_r), "<p>Recovered words.</p>", "html",
+                                      "Recovered words.", removed_chars=1000)
+type_at_end(pwid.editor, " TYPED JUST NOW")
+pwid._autosave_timer.stop()
+not_yet_saved = "TYPED JUST NOW" not in db.get_project(typed_r).content_text
+seen = file_recovery(typed_cp.id, {})
+check("autosave on: text typed just before a Recovery restore is kept as the 'before' version",
+      not_yet_saved and seen.titles() == ["Recovery", "Restore recovered text"]
+      and "Recovered words." in db.get_project(typed_r).content_text
+      and any(label == "Before recovery restore" and "TYPED JUST NOW" in t
+              for label, t in version_texts(typed_r)), f"{seen.titles()} {version_texts(typed_r)}")
+
+from app.projects_widget import ProjectsWidget  # noqa: E402
+bare = ProjectsWidget(db)                             # no history, as some tests build it
+bare.show()
+lone = db.create_project("Restored without history")
+db.save_project_content(lone.id, "<p>Now.</p>", content_format="html", content_text="Now.")
+lone_v = db.add_version(lone.id, "<p>Then.</p>", label="then", content_format="html",
+                        content_text="Then.")
+bare.refresh_project_list(select_id=lone.id)
+settle()
+# An error inside a button's slot does not reach this code: Qt hands it to
+# sys.excepthook, so collect it there.
+slot_errors = []
+previous_hook = sys.excepthook
+sys.excepthook = lambda kind, value, tb: slot_errors.append(repr(value))
+seen_titles = None
+try:
+    version_row_click(bare, lone_v.id)
+    seen_titles = answering({"Restore version": "Yes"}, lambda: restore_selected(bare)).titles()
+    settle()
+    restored_then = db.get_project(lone.id).content_text
+    bare.restore_content(lone.id, "<p>Recovered.</p>", "html", "Recovered.")
+    error = None
+except Exception as exc:                              # noqa: BLE001 — reported by the check
+    error = repr(exc)
+    restored_then = None
+finally:
+    sys.excepthook = previous_hook
+check("a ProjectsWidget without history restores from Version History and Recovery, without an error",
+      error is None and not slot_errors and seen_titles == ["Restore version"]
+      and restored_then == "Then." and db.get_project(lone.id).content_text == "Recovered.",
+      f"{error} {slot_errors} {seen_titles} {restored_then!r}")
+bare.close()
+bare.deleteLater()
+QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.Yes)
+win.main_tabs.setCurrentWidget(win.daily_splitter)
 
 print("\n--- autosave stays fast on long paragraphs (typing-lag regression) ---")
 import random  # noqa: E402
@@ -404,6 +920,8 @@ win.close()
 settle()
 win = MainWindow()
 check("still listed after restart", len(win.db.list_recovery_checkpoints()) == count and count > 0)
+check("restored projects keep their restored text after restart",
+      all(text in win.db.get_project(pid).content_text for pid, text in restored_projects.items()))
 win.close()
 
 print("\n" + ("ALL PASS" if not failures else f"{len(failures)} FAILURES: {failures}"))

@@ -1873,6 +1873,7 @@ class MainWindow(QMainWindow):
             self._save_current_entry()
         self.history.record_before_restore(date)
         self._store_entry(date, html, fmt or "html", plain, detect_removal=False)
+        self.history.rebase_session("date", date, stored_state(html, fmt or "html", plain))
         self._load_date(date)
         self._refresh_calendar_marks()
         self._update_dirty_indicator()

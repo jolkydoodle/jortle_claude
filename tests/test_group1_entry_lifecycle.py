@@ -173,6 +173,114 @@ for text, html, expected in samples:
 check("an image-only document counts as written", document_has_content(img_html, img_plain))
 check("plain-text rule unchanged for blank input", not has_meaningful_text("​"))
 
+# The same samples through the three places that used to keep their own rule
+# (1R-F1): the migration check, diagnose_data.py and the autosave default.
+import contextlib  # noqa: E402
+import io  # noqa: E402
+import tempfile  # noqa: E402
+
+import diagnose_data  # noqa: E402
+from app import data_migration  # noqa: E402
+from app.database import Database  # noqa: E402
+
+blank_samples = [(t, h) for t, h, expected in samples if not expected] + [
+    ("﻿", ""), ("⁠", ""), ("", "<ul><li></li></ul>"),
+]
+written_samples = [("x", "<p>x</p>"), (img_plain, img_html), ("", '<p><img src="a.png" /></p>')]
+scratch = pathlib.Path(tempfile.mkdtemp(prefix="jortle-g1-rule-"))
+
+
+def one_row_folder(name, sql, *params):
+    folder = scratch / name
+    folder.mkdir()
+    db = Database(str(folder / "journal.db"))
+    if sql:
+        db._conn.execute(sql, params)
+        db._conn.commit()
+    return folder, db
+
+
+ENTRY = ("INSERT INTO entries (date, title, body_md, body_format, body_text, tag, created_at, "
+         "updated_at) VALUES ('2026-01-05', ?, ?, 'html', ?, ?, 'x', 'x')")
+NOTE = ("INSERT INTO reader_notes_scoped (scope, ref, content, content_format, content_text, "
+        "created_at, updated_at) VALUES ('date', '2026-01-05', ?, 'html', ?, 'x', 'x')")
+for i, (text, html) in enumerate(blank_samples + written_samples):
+    expected = (text, html) in written_samples
+    folder, db = one_row_folder(f"entry-{i}", ENTRY, "", html, text, None)
+    autosave_says = saving.ensure_autosave_default(db)
+    db.close()
+    check(f"{text!r}/{html[:24]!r}: migration check says user content = {expected}",
+          data_migration.has_user_content(folder) is expected)
+    check(f"{text!r}/{html[:24]!r}: diagnose_data counts it as writing = {expected}",
+          ("2026-01-05" in diagnose_data.entry_lengths(folder)) is expected)
+    check(f"{text!r}/{html[:24]!r}: autosave default for an install holding only it = {expected}",
+          autosave_says is expected)
+    folder, db = one_row_folder(f"note-{i}", NOTE, html, text)
+    db.close()
+    check(f"{text!r}/{html[:24]!r}: a Reader's Note alone is user content = {expected}",
+          data_migration.has_user_content(folder) is expected)
+
+for label, title, tag in (("a Day Marker", "", "Rest"), ("a title", "A title", None)):
+    folder, db = one_row_folder(f"entry-{label}", ENTRY, title, "", "", tag)
+    db.close()
+    check(f"a blank entry with {label} is still user content",
+          data_migration.has_user_content(folder) is True)
+
+# A database from before round 21 has no body_text: judged on body_md.
+for label, body, expected in (("blank", "\n\n", False), ("written", "old words", True)):
+    folder = scratch / f"pre-round21-{label}"
+    folder.mkdir()
+    conn = sqlite3.connect(str(folder / "journal.db"))
+    conn.execute("CREATE TABLE entries (date TEXT PRIMARY KEY, title TEXT, body_md TEXT, "
+                 "tag TEXT, tag_color TEXT, created_at TEXT, updated_at TEXT)")
+    conn.execute("INSERT INTO entries VALUES ('2025-05-05', '', ?, NULL, NULL, 'x', 'x')", (body,))
+    conn.commit()
+    conn.close()
+    check(f"a pre-round-21 database with a {label} entry: user content = {expected}",
+          data_migration.has_user_content(folder) is expected)
+
+# diagnose_data's comparison: an image-only entry missing here is never "safe to delete".
+current, db = one_row_folder("compare-current", None)
+db.close()
+other, db = one_row_folder("compare-image", ENTRY, "", '<p><img src="a.png" /></p>', "", None)
+db.close()
+blank_other, db = one_row_folder("compare-blank", ENTRY, "", "<p></p>", "\n\n", None)
+db.close()
+out = io.StringIO()
+with contextlib.redirect_stdout(out):
+    diagnose_data.compare(current, [other, blank_other])
+report = out.getvalue()
+image_part = report.split(other.name, 1)[1].split(blank_other.name, 1)[0]
+check("diagnose_data: an image-only entry absent here is reported missing, not safe to delete",
+      "2026-01-05" in image_part and "Safe to delete" not in image_part, report)
+check("diagnose_data: a folder holding only a blank row has nothing missing",
+      "HAS WRITING" not in report.split(blank_other.name, 1)[1], report)
+
+# Validation reads the newest WRITTEN entry end to end (1R-F2): a newer
+# legacy blank row must not be picked and reported as damaged.
+ROW = ("INSERT INTO entries (date, title, body_md, body_format, body_text, created_at, "
+       "updated_at) VALUES (?, '', ?, 'html', ?, 'x', 'x')")
+for i, blank in enumerate(("\n\n\n", "\t")):
+    folder, db = one_row_folder(f"validate-{i}", ROW, "2026-01-05", "<p>words</p>", "words")
+    db._conn.execute(ROW, ("2026-01-06", "", blank))
+    db._conn.commit()
+    db.close()
+    try:
+        data_migration.validate_data_dir(folder)
+        error = None
+    except ValueError as exc:
+        error = str(exc)
+    check(f"a newer blank row ({blank!r}) does not fail validation", error is None, error)
+folder, db = one_row_folder("validate-damaged", ROW, "2026-01-05", "", "words")
+db.close()
+try:
+    data_migration.validate_data_dir(folder)
+    error = ""
+except ValueError as exc:
+    error = str(exc)
+check("a written entry without its formatted content is still reported",
+      "lost its formatted content" in error, error)
+
 
 # ====================================================== 1. empty dates
 win = MainWindow()
