@@ -31,8 +31,10 @@ CI, where nobody can re-run it locally to see what happened.
 from __future__ import annotations
 
 import os
+import signal
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -59,6 +61,51 @@ def summarise(output: str, ok: bool) -> str:
     return lines[-1][:70] if lines else ""
 
 
+SUITE_TIMEOUT = 900   # seconds per suite
+
+
+def run_suite(path: Path, env: dict) -> tuple:
+    """Runs one suite; returns (exit code, its output).
+
+    A suite that overruns SUITE_TIMEOUT is a FAIL of that suite, and the
+    remaining suites still run. (Before, the timeout raised out of the whole
+    runner: on 2026-10-01 a computer that went to sleep mid-run woke with a
+    suite far past its limit, and the run ended with a traceback after eight
+    suites.) Its own process tree is stopped by its PID, never by name:
+    other Python programs may be open. The output goes to a temporary file
+    rather than a pipe, so a process the suite started that outlives it
+    cannot hold the runner waiting on an inherited pipe.
+    """
+    with tempfile.TemporaryFile(mode="w+", encoding="utf-8", errors="replace") as out:
+        process = subprocess.Popen(
+            [sys.executable, str(path)], env=env, stdout=out, stderr=subprocess.STDOUT,
+            start_new_session=(os.name != "nt"),
+        )
+        try:
+            returncode = process.wait(timeout=SUITE_TIMEOUT)
+            note = ""
+        except subprocess.TimeoutExpired:
+            stop_tree(process)
+            returncode = 1
+            note = (f"\nFAIL  {path.name} timed out after {SUITE_TIMEOUT} s; "
+                    f"its process tree (PID {process.pid}) was stopped\n")
+        out.seek(0)
+        return returncode, out.read() + note
+
+
+def stop_tree(process: subprocess.Popen) -> None:
+    """Stops a suite and every process it started, by the suite's own PID."""
+    if os.name == "nt":
+        subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                       capture_output=True)
+    else:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)   # its own session (start_new_session)
+        except ProcessLookupError:
+            pass
+    process.wait()
+
+
 def main() -> int:
     for stream in (sys.stdout, sys.stderr):
         stream.reconfigure(encoding="utf-8", errors="replace")
@@ -70,13 +117,9 @@ def main() -> int:
     failures = []
     outputs = {}
     for path in sorted(HERE.glob("test_*.py")):
-        result = subprocess.run(
-            [sys.executable, str(path)], env=env, capture_output=True,
-            encoding="utf-8", errors="replace", timeout=900,
-        )
-        ok = result.returncode == 0
-        output = (result.stdout or "") + (result.stderr or "")
-        print(f"{'ok  ' if ok else 'FAIL'}  {path.name:<34} {summarise(output, ok)}")
+        returncode, output = run_suite(path, env)
+        ok = returncode == 0
+        print(f"{'ok  ' if ok else 'FAIL'}  {path.name:<34} {summarise(output, ok)}", flush=True)
         if not ok:
             failures.append(path.name)
             outputs[path.name] = output

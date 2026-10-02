@@ -29,6 +29,11 @@ twice as wide as the real `windows` platform does ("Wednesday" at 9pt: 108 px
 against 61 px), so layout and pixel checks fail for widths no user ever
 sees. It has to happen before the QApplication exists, which is why it runs
 at import: every Qt suite imports this module first.
+
+ERRORS INSIDE QT CALLBACKS. For the same reason — every Qt suite imports this
+module first — importing it also installs `qt_errors`' recorder, which fails
+a suite whose run raised an error inside a Qt slot or timer, even if every
+check passed (D24; see qt_errors.py).
 """
 from __future__ import annotations
 
@@ -87,3 +92,8 @@ def isolate(prefix: str = "jortle-test-") -> Path:
 
 
 use_system_fonts_offscreen()
+
+
+import qt_errors  # noqa: E402
+
+qt_errors.install()

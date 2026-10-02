@@ -6,6 +6,11 @@ Markdown loading, and confirms the forced-caret-centering method is gone."""
 import pathlib
 import sys
 
+# Not for data isolation (this suite builds bare editors and opens no data
+# folder): for Qt's real fonts on Windows and the shared recorder of errors
+# inside Qt callbacks, which every Qt suite gets this way (D24).
+import isolation  # noqa: F401
+
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
 from PySide6.QtWidgets import QApplication  # noqa: E402

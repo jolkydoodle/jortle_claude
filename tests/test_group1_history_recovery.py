@@ -34,20 +34,12 @@ failures = []
 
 # An error raised inside a Qt callback (a slot, a timer) never reaches the code
 # that caused it: Qt hands it to sys.excepthook and carries on, so the process
-# still exits 0. Record every one with its full stack, pass it on to the
-# original hook, and fail at the end (1R-F9, F9-2; FP-9 item 5).
-import traceback  # noqa: E402
+# still exits 0. The shared recorder (tests/qt_errors.py, installed by importing
+# isolation) keeps every one with its full stack and fails the run at exit
+# (D24); this suite also checks it by name at the end (1R-F9, F9-2; FP-9 item 5).
+import qt_errors  # noqa: E402
 
-qt_slot_errors = []
-_original_excepthook = sys.excepthook
-
-
-def _record_qt_slot_error(kind, value, tb):
-    qt_slot_errors.append("".join(traceback.format_exception(kind, value, tb)))
-    _original_excepthook(kind, value, tb)
-
-
-sys.excepthook = _record_qt_slot_error
+qt_slot_errors = qt_errors.recorded
 
 
 def check(label, cond, detail=""):
@@ -942,7 +934,6 @@ check("restored projects keep their restored text after restart",
       all(text in win.db.get_project(pid).content_text for pid, text in restored_projects.items()))
 win.close()
 app.processEvents()                                  # let anything still queued run now
-sys.excepthook = _original_excepthook
 check("no uncaught error inside a Qt slot during the whole run", not qt_slot_errors,
       f"{len(qt_slot_errors)} error(s); full stacks:\n" + "\n".join(qt_slot_errors))
 

@@ -106,6 +106,88 @@ else:
           f"({width} px offscreen, {native_width} px native {native_family})",
           width > 0 and width == native_width)
 
+print("\n--- every Qt suite gets the recorder of errors inside Qt callbacks (D24) ---")
+# A suite gets the recorder (and Qt's real fonts on Windows) by importing
+# isolation before PySide6. Derived from the files themselves, so a new suite
+# is covered without editing this list (FP-1).
+import re  # noqa: E402
+
+TESTS = pathlib.Path(__file__).resolve().parent
+qt_suites = 0
+for suite in sorted(TESTS.glob("test_*.py")):
+    source = suite.read_text(encoding="utf-8")
+    pyside = re.search(r"^\s*(from|import)\s+PySide6\b", source, re.M)
+    if not pyside:
+        continue
+    qt_suites += 1
+    iso = re.search(r"^\s*import\s+isolation\b", source, re.M)
+    check(f"{suite.name} imports isolation before PySide6",
+          iso is not None and iso.start() < pyside.start())
+check(f"the check above saw the Qt suites ({qt_suites})", qt_suites >= 30)
+
+# The recorder itself, in real child processes: Qt hands an error raised
+# inside a slot to sys.excepthook and carries on, so without the recorder
+# the child below would exit 0.
+import subprocess  # noqa: E402
+
+CHILD = r'''
+import os, sys
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+import isolation
+from PySide6.QtCore import QTimer
+from PySide6.QtWidgets import QApplication
+app = QApplication([])
+mode = sys.argv[1]
+calls = []
+if mode == "chain":
+    import qt_errors
+    previous = qt_errors._original_hook
+    qt_errors._original_hook = lambda *a: (calls.append(a[1]), previous(*a))
+def boom():
+    raise RuntimeError("raised inside a QTimer slot " + mode)
+if mode == "expected":
+    import qt_errors
+    with qt_errors.expected_errors() as caught:
+        QTimer.singleShot(0, boom)
+        QTimer.singleShot(20, app.quit)
+        app.exec()
+    print("COLLECTED", len(caught), "raised inside a QTimer slot" in "".join(caught))
+elif mode != "clean":
+    QTimer.singleShot(0, boom)
+    QTimer.singleShot(20, app.quit)
+    app.exec()
+else:
+    QTimer.singleShot(20, app.quit)
+    app.exec()
+if mode == "chain":
+    print("CHAINED", len(calls))
+print("CHILD REACHED ITS END")
+sys.exit(0)
+'''
+
+
+def run_child(mode):
+    env = dict(os.environ, PYTHONPATH=str(TESTS), PYTHONIOENCODING="utf-8")
+    result = subprocess.run([sys.executable, "-c", CHILD, mode], capture_output=True,
+                            encoding="utf-8", errors="replace", env=env, timeout=120)
+    return result.returncode, result.stdout, result.stderr
+
+
+code, out, err = run_child("raise")
+check(f"a child that raises inside a QTimer slot and then exits 0 ends with exit code 1 (got {code})",
+      code == 1 and "CHILD REACHED ITS END" in out)
+check("...and prints the full stack under UNCAUGHT ERROR INSIDE A QT CALLBACK",
+      "UNCAUGHT ERROR INSIDE A QT CALLBACK" in err and "in boom" in err
+      and "RuntimeError: raised inside a QTimer slot raise" in err)
+code, out, err = run_child("clean")
+check(f"a clean child exits 0 (got {code})", code == 0 and "UNCAUGHT" not in err + out)
+code, out, err = run_child("chain")
+check(f"the original excepthook is still called (got {code}, {out.strip()!r})",
+      code == 1 and "CHAINED 1" in out)
+code, out, err = run_child("expected")
+check(f"expected_errors() collects a deliberate error without failing (got {code}, {out.strip()!r})",
+      code == 0 and "COLLECTED 1 True" in out and "UNCAUGHT" not in err)
+
 print()
 if failures:
     print(f"{len(failures)} FAILURE(S):")
