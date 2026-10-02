@@ -1171,8 +1171,9 @@ set_writing_font("Georgia", 13)
 # F1a-4: right after a load, with no caret movement, the font and size boxes
 # show the loaded document's own font, in all four editors.
 def combo_shows(family):
-    """What a font box shows for `family` (an uninstalled family resolves to
-    a fallback, the same way in the editor's own box)."""
+    """What a fresh font box shows for `family`: an installed family as
+    itself, an uninstalled one (on Linux CI: Georgia, Times New Roman, Arial)
+    as the fallback Qt picks."""
     probe = QFontComboBox()
     probe.setCurrentFont(QFont(family))
     shown = probe.currentFont().family()
@@ -1180,12 +1181,31 @@ def combo_shows(family):
     return shown
 
 
+def display_names(family):
+    """Every name a font box may show for a document in `family` on this
+    platform: the family itself, or its fallback when it is not installed
+    (4C1a-F2: the editor's own box can keep the requested name while a fresh
+    box shows the fallback, as on Linux CI)."""
+    return {family, combo_shows(family)}
+
+
 def boxes(editor):
     return editor.family_combo.currentFont().family(), editor.size_spin.value()
 
 
-def expected_boxes(family, size):
-    return combo_shows(family), int(round(size))
+def check_boxes(label, results):
+    """results: (document, boxes shown right after its load, its stored (family, size)),
+    in load order. Non-vacuous on every platform (4C1a-F2): consecutive documents
+    must display different families here, fallbacks included, or it is a test-setup
+    error, not a pass."""
+    names = [display_names(family) for _doc, _shown, (family, _size) in results]
+    distinct = all(not (names[i] & names[i - 1]) for i in range(1, len(names)))
+    check(f"[F1a-4] (setup) {label}: consecutive documents display different font families on this platform",
+          distinct, [(stored, sorted(n)) for (_d, _s, stored), n in zip(results, names)])
+    shown_ok = all(shown[0] in display_names(family) and shown[1] == int(round(size))
+                   for _doc, shown, (family, size) in results)
+    check(f"[F1a-4] {label}: right after a load the font and size boxes show the document's own font",
+          distinct and shown_ok, results)
 
 
 win.main_tabs.setCurrentWidget(win.daily_splitter)
@@ -1194,18 +1214,16 @@ for date in (E6, E5, E6):                       # Times New Roman 16, Georgia 13
     win._request_date(date)
     settle()
     family, size = stored_document_font(entry_row(win, date)[0])
-    results.append((date, boxes(win.editor), expected_boxes(family, size)))
-check("[F1a-4] Daily Jorts: right after a load the font and size boxes show the entry's own font",
-      all(shown == expected for _d, shown, expected in results) and results[0][2] != results[1][2], results)
+    results.append((date, boxes(win.editor), (family, size)))
+check_boxes("Daily Jorts", results)
 win.main_tabs.setCurrentWidget(win.projects_widget)
 results = []
 for pid in (font_project, project.pid, font_project):       # Arial 20, Georgia 13, Arial 20
     win.projects_widget.refresh_project_list(select_id=pid)
     settle()
     family, size = stored_document_font(project_row(win, pid)[0])
-    results.append((pid, boxes(win.projects_widget.editor), expected_boxes(family, size)))
-check("[F1a-4] Projects: right after a load the font and size boxes show the project's own font",
-      all(shown == expected for _p, shown, expected in results) and results[0][2] != results[1][2], results)
+    results.append((pid, boxes(win.projects_widget.editor), (family, size)))
+check_boxes("Projects", results)
 # Reader's Notes: one note saved in the notes' own font, one holding the
 # journal's HTML (Georgia 13 in its <body>, written there as at [C2]).
 win.main_tabs.setCurrentWidget(win.daily_splitter)
@@ -1223,18 +1241,16 @@ for date in (E9, E5, E9):
     win._request_date(date)
     settle()
     family, size = stored_document_font(notes_row(win, "date", date)[0])
-    results.append((date, boxes(win.reader_notes.editor), expected_boxes(family, size)))
-check("[F1a-4] date Reader's Notes: right after a load the font and size boxes show the note's own font",
-      all(shown == expected for _d, shown, expected in results) and results[0][2] != results[1][2], results)
+    results.append((date, boxes(win.reader_notes.editor), (family, size)))
+check_boxes("date Reader's Notes", results)
 win.main_tabs.setCurrentWidget(win.projects_widget)
 results = []
 for pid in (project.pid, font_project, project.pid):
     win.projects_widget.refresh_project_list(select_id=pid)
     settle()
     family, size = stored_document_font(notes_row(win, "project", pid)[0])
-    results.append((pid, boxes(win.projects_widget.reader_notes.editor), expected_boxes(family, size)))
-check("[F1a-4] project Reader's Notes: right after a load the font and size boxes show the note's own font",
-      all(shown == expected for _p, shown, expected in results) and results[0][2] != results[1][2], results)
+    results.append((pid, boxes(win.projects_widget.reader_notes.editor), (family, size)))
+check_boxes("project Reader's Notes", results)
 win.main_tabs.setCurrentWidget(win.daily_splitter)
 settle()
 
