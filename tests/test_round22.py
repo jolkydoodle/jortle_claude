@@ -172,14 +172,23 @@ def char_props(window):
 chars_before = char_props(w)
 check("blank paragraph present before save", "" in [s[0] for s in structure_before])
 check("literal tab present before save", any("\t" in s[0] for s in structure_before))
-check("date link applied on save", chars_before["datelink"] == "journal://date/2026-09-20",
-      chars_before["datelink"])
+check("date link applied on save (in the stored row)",  # 4C1a: not in the live editor
+      "journal://date/2026-09-20" in w.db.get_entry("2026-09-15").body_md)
+
+
+def typed_formats(props):
+    """Every format the user typed, without the date link: since 4C1a (bug 8,
+    4C1a-D3) a date is linked only in the stored copy, so the live editor's
+    baseline has no link on the date's characters and a reloaded one does."""
+    return {key: value for key, value in props.items() if key != "datelink"}
 
 # --- A. save -> change date -> return
 w.selected_date.set("2026-09-16")
 w.selected_date.set("2026-09-15")
 check("A: structure identical after date change and return", structure_now(w) == structure_before)
-check("A: character formats identical", char_props(w) == chars_before)
+check("A: character formats identical", typed_formats(char_props(w)) == typed_formats(chars_before))
+check("A: the date is a link once the entry is reloaded", char_props(w)["datelink"] == "journal://date/2026-09-20",
+      char_props(w)["datelink"])
 
 # --- C. autosave -> change date -> return
 c2 = w.editor.text_edit.textCursor()
@@ -201,7 +210,7 @@ w2 = MainWindow()
 w2.selected_date.set("2026-09-15")
 check("B: structure identical after full application restart",
       structure_now(w2) == expected_after_append)
-check("B: character formats identical after restart", char_props(w2) == chars_before)
+check("B: character formats identical after restart", typed_formats(char_props(w2)) == typed_formats(chars_before))
 b = w2.editor.text_edit.document().findBlockByNumber(1)
 check("B: blank paragraph is still a real empty paragraph", b.text() == "")
 check("B: literal tab survived restart",

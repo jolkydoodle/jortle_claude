@@ -97,8 +97,15 @@ after_one = c3.charFormat().fontPointSize()
 print("'one' explicit size after default-font change (should still be unset/0):", after_one)
 assert after_one == 0.0
 print("base point size now:", te._base_point_size)
-assert te._base_point_size == 18.0
+# Since 4C1a (Master Spec 2026-10-02 §14.9) a document with content keeps the
+# font stored with it; only an empty document takes the new setting.
+assert te._base_point_size == base_before, "a document with content keeps its own font"
 print("default-font change preserves per-word overrides: PASS")
+from app.rich_editor import RichEditor  # noqa: E402
+empty = RichEditor()
+empty.set_font("Georgia", 18)
+assert empty.text_edit._base_point_size == 18.0, "an empty document takes the new setting"
+print("an empty document takes the new default font: PASS")
 
 # --- heading/list/link toolbar sanity: just confirm the methods still
 #     exist and run without error (full behavioral coverage was done in

@@ -783,7 +783,7 @@ def audit_ctrl_s():
     settle()
 
 
-for date, reload_, ref in (("2026-02-01", False, "KF-2 → 4C1"), ("2026-02-02", True, "bug 29 → 4C1")):
+for date, reload_, ref in (("2026-02-01", False, "KF-2"), ("2026-02-02", True, "bug 29")):
     win.db.set_setting("font_size", "13")
     win.db.set_setting("font_family", "Georgia")
     win._apply_settings()
@@ -824,9 +824,10 @@ for date, reload_, ref in (("2026-02-01", False, "KF-2 → 4C1"), ("2026-02-02",
               "and no version is recorded") if reload_ else
              ("KF-2: writing-font change, unedited Ctrl+S on the open entry — the stored HTML stays "
               "byte-identical and no version is recorded"))
-    known_failing(label, after == after_font and new_versions == 0, ref,
-                  f"row changed: {after != after_font}; new versions from this Ctrl+S: {new_versions}; "
-                  f"old font baked into spans: {len(body_spans)}")
+    # Fixed in 4C1a (C1a-1, C1a-2): known failures until then, now plain checks.
+    check(f"[{'C1a-1' if reload_ else 'C1a-2'}] {label}", after == after_font and new_versions == 0,
+          f"row changed: {after != after_font}; new versions from this Ctrl+S: {new_versions}; "
+          f"old font baked into spans: {len(body_spans)}")
     if reload_:
         reasons = [r[0] for r in win.db._conn.execute(
             "SELECT reason FROM entry_revisions WHERE date=? ORDER BY id", (date,))]
@@ -836,6 +837,500 @@ win.db.set_setting("font_size", "13")
 win.db.set_setting("font_family", "Georgia")
 win._apply_settings()
 settle()
+
+# =========================================================== 4C1a
+print("\n--- [4C1a] each document keeps its own font; dates are linked in the saved copy only ---")
+# Criteria C1a-3…C1a-7, C1a-10 and the zoom check (JORTLE_IMPLEMENTATION_HANDOFF.md,
+# "4C1a plan — agreed 2026-10-02"); C1a-1 and C1a-2 are [C13] above.
+win.main_tabs.setCurrentWidget(win.daily_splitter)
+win.activateWindow()
+settle()
+pw_module.ask_name = lambda *a, **k: ("Font project", True)
+
+
+def set_writing_font(family, size):
+    win.db.set_setting("font_family", family)
+    win.db.set_setting("font_size", str(size))
+    win._apply_settings()
+    settle()
+
+
+def body_font(html):
+    match = re.search(r"<body style=\"[^\"]*font-family:'([^']*)'; font-size:(\d+(?:\.\d+)?)pt", html or "")
+    return (match.group(1), float(match.group(2))) if match else None
+
+
+def font_spans(html):
+    return len(re.findall(r"<span style=\"[^\"]*font-family", (html or "").split("<body", 1)[-1]))
+
+
+def shown_font(editor):
+    font = editor.text_edit.document().defaultFont()
+    return font.family(), editor.text_edit.base_point_size()
+
+
+# C1a-3, bug 35: the Reader's Notes received the journal's HTML (Georgia in its
+# <body>) and were saved once; no font may have been baked into the text.
+for notes in (date_notes, project_notes):
+    check(f"[C1a-3] bug 35: {notes.name} saved the loaded document with no font baked into its text",
+          font_spans(notes.first_save[0]) == font_spans(journal_html),
+          f"font spans {font_spans(notes.first_save[0])} (the HTML it loaded had {font_spans(journal_html)})")
+
+# C1a-4, bug 8: a new date typed and saved.
+E1, E2 = "2026-04-01", "2026-04-02"
+win._request_date(E1)
+settle()
+edit = win.editor.text_edit
+edit.setFocus()
+QTest.keyClick(edit, Qt.Key_End, Qt.ControlModifier)
+QTest.keyClicks(edit, "met on 2026-04-07 at noon")
+settle()
+document = edit.document()
+live_before, steps_before = document.toHtml(), document.availableUndoSteps()
+ctrl_s(win, edit)
+check("[C1a-4] bug 8: Ctrl+S leaves the live document unchanged (content and undo steps)",
+      document.toHtml() == live_before and document.availableUndoSteps() == steps_before,
+      f"undo steps {steps_before} -> {document.availableUndoSteps()}")
+check("[C1a-4] ...and the stored row holds the date link",
+      "journal://date/2026-04-07" in (entry_row(win, E1) or ("",))[0])
+date_cursor = QTextCursor(document)
+date_cursor.setPosition(document.toPlainText().index("2026-04-07") + 4)
+QTest.mouseClick(edit.viewport(), Qt.LeftButton, Qt.NoModifier, edit.cursorRect(date_cursor).center())
+settle()
+check("[C1a-4] ...and a plain click on the new date navigates to it", win.current_date == "2026-04-07",
+      win.current_date)
+
+# 4C1a/AM-11: a date with letters directly before or after it is not a date,
+# the same rule as for saved links: a click on it does not navigate.
+E7 = "2026-04-11"
+win._request_date(E7)
+settle()
+edit = win.editor.text_edit
+edit.setFocus()
+QTest.keyClicks(edit, "x2026-04-09 and 2026-04-10x")
+settle()
+ctrl_s(win, edit)
+for attached, iso in (("x2026-04-09", "2026-04-09"), ("2026-04-10x", "2026-04-10")):
+    if win.current_date != E7:                  # a wrong navigation by the probe before
+        win._request_date(E7)
+        settle()
+        edit = win.editor.text_edit
+    probe = QTextCursor(edit.document())
+    probe.setPosition(edit.toPlainText().index(attached) + attached.index(iso) + 4)
+    QTest.mouseClick(edit.viewport(), Qt.LeftButton, Qt.NoModifier, edit.cursorRect(probe).center())
+    settle()
+    check(f"[C1a-4] a click on {attached!r} (letters attached) does not navigate, and it is not saved as a link",
+          win.current_date == E7 and f"journal://date/{iso}" not in entry_row(win, E7)[0], win.current_date)
+win._request_date(E2)
+settle()
+edit = win.editor.text_edit
+edit.setFocus()
+QTest.keyClicks(edit, "seen on 2026-04-08 again")
+settle()
+typed = edit.toPlainText()
+ctrl_s(win, edit)
+QTest.keyClick(edit, Qt.Key_Z, Qt.ControlModifier)
+settle()
+check("[C1a-4] ...and after Ctrl+S one Ctrl+Z undoes the last typing (not a linking step)",
+      edit.toPlainText() != typed, repr(edit.toPlainText()))
+QTest.keyClick(edit, Qt.Key_Y, Qt.ControlModifier)
+settle()
+win.editor.mark_clean()                         # back to the stored text; nothing left to save
+
+# C1a-5: a new, empty entry and a new project start in the current writing font.
+set_writing_font("Arial", 20)
+E3 = "2026-04-03"
+win._request_date(E3)
+settle()
+win.editor.text_edit.setFocus()
+QTest.keyClicks(win.editor.text_edit, "new words")
+ctrl_s(win, win.editor.text_edit)
+check("[C1a-5] a new entry starts in the current writing font (Arial 20), with no font span",
+      body_font(entry_row(win, E3)[0]) == ("Arial", 20.0) and font_spans(entry_row(win, E3)[0]) == 0,
+      f"{body_font(entry_row(win, E3)[0])}, spans {font_spans(entry_row(win, E3)[0])}")
+win.main_tabs.setCurrentWidget(win.projects_widget)
+settle()
+next(b for b in win.projects_widget.findChildren(QPushButton) if b.text() == "New Project").click()
+settle()
+font_project = win.projects_widget.current_project_id
+win.projects_widget.editor.text_edit.setFocus()
+QTest.keyClicks(win.projects_widget.editor.text_edit, "project words")
+ctrl_s(win, win.projects_widget.editor.text_edit)
+check("[C1a-5] a new project starts in the current writing font (Arial 20), with no font span",
+      body_font(project_row(win, font_project)[0]) == ("Arial", 20.0) and font_spans(project_row(win, font_project)[0]) == 0,
+      f"{body_font(project_row(win, font_project)[0])}, spans {font_spans(project_row(win, font_project)[0])}")
+
+# C1a-10: an empty, unwritten document open when the setting changes takes it.
+win.main_tabs.setCurrentWidget(win.daily_splitter)
+E4 = "2026-04-04"
+win._request_date(E4)
+settle()
+set_writing_font("Courier New", 15)
+check("[C1a-10] an empty, unwritten Daily Jort open when the setting changes takes the new font",
+      shown_font(win.editor) == ("Courier New", 15.0) and not win.editor.is_dirty() and entry_row(win, E4) is None,
+      shown_font(win.editor))
+win.main_tabs.setCurrentWidget(win.projects_widget)
+settle()
+next(b for b in win.projects_widget.findChildren(QPushButton) if b.text() == "New Project").click()
+settle()
+empty_project = win.projects_widget.current_project_id
+set_writing_font("Arial", 20)
+check("[C1a-10] an empty, unwritten project open when the setting changes takes the new font",
+      shown_font(win.projects_widget.editor) == ("Arial", 20.0) and not win.projects_widget.editor.is_dirty()
+      and not (project_row(win, empty_project)[0] or "").strip(), shown_font(win.projects_widget.editor))
+
+# C1a-6: an existing entry (D, saved in Georgia 13) under the Arial 20 setting.
+journal.show(win)
+check("[C1a-6] an existing entry keeps its own font on screen (Georgia 13, setting Arial 20)",
+      shown_font(win.editor) == ("Georgia", 13.0), shown_font(win.editor))
+state = journal.state(win)
+journal.save(win)
+check("[C1a-6] ...an unedited Ctrl+S writes nothing", journal.state(win) == state)
+spans_before = font_spans(journal.stored(win)[0])
+edit = win.editor.text_edit
+edit.setFocus()
+QTest.keyClick(edit, Qt.Key_End, Qt.ControlModifier)
+QTest.keyClicks(edit, "Z")
+journal.save(win)
+check("[C1a-6] ...and an edit adds no font spans to untouched text",
+      font_spans(journal.stored(win)[0]) == spans_before and body_font(journal.stored(win)[0]) == ("Georgia", 13.0),
+      f"{spans_before} -> {font_spans(journal.stored(win)[0])}, body {body_font(journal.stored(win)[0])}")
+
+# C1a-7: rows saved under two different writing fonts are never rewritten by
+# loading, by setting changes, or by an unedited Ctrl+S.
+E5, E6 = "2026-04-05", "2026-04-06"
+for date, (family, size) in ((E5, ("Georgia", 13)), (E6, ("Times New Roman", 16))):
+    set_writing_font(family, size)
+    win._request_date(date)
+    settle()
+    win.editor.text_edit.setFocus()
+    QTest.keyClicks(win.editor.text_edit, f"written in {family}")
+    ctrl_s(win, win.editor.text_edit)
+win._request_date(E1)                          # leave the last typed entry: its "left the entry"
+settle()                                       # version is the normal end of that editing session
+left = [r[0] for r in win.db._conn.execute(
+    "SELECT reason FROM entry_revisions WHERE date IN (?, ?) ORDER BY id", (E5, E6))]
+check("[C1a-7] (setup) the two typed entries each got only their 'left the entry' version",
+      left == ["left the entry", "left the entry"], left)
+set_writing_font("Arial", 20)
+seeded = {d: (entry_row(win, d), entry_versions(win, d)) for d in (E5, E6)}
+for date in (E5, E6, E5, E6):
+    win._request_date(date)
+    settle()
+    ctrl_s(win, win.editor.text_edit)
+set_writing_font("Courier New", 15)
+set_writing_font("Arial", 20)
+now_seeded = {d: (entry_row(win, d), entry_versions(win, d)) for d in (E5, E6)}
+check("[C1a-7] rows saved in two writing fonts: loading, unedited Ctrl+S and setting changes rewrite nothing",
+      now_seeded == seeded
+      and body_font(seeded[E5][0][0]) == ("Georgia", 13.0) and body_font(seeded[E6][0][0]) == ("Times New Roman", 16.0),
+      f"bodies {body_font(seeded[E5][0][0])}, {body_font(seeded[E6][0][0])}; changed: "
+      f"{[(d, 'row' if now_seeded[d][0] != seeded[d][0] else 'versions', seeded[d][1], now_seeded[d][1]) for d in (E5, E6) if now_seeded[d] != seeded[d]]}")
+
+# The user's note for D1: the editor zoom survives date changes, project
+# changes and Reader's Notes loads (each loaded document's own font is applied
+# without resetting zoom).
+win._request_date(E5)
+settle()
+win.editor.zoom_spin.setValue(130)
+settle()
+kept = []
+for date in (E6, D, E5):
+    win._request_date(date)
+    settle()
+    kept.append(win.editor.text_edit.zoom_percent())
+check("[zoom] the Daily Jorts zoom survives date changes (documents in different fonts)", kept == [130] * 3, kept)
+notes_kit = sd.Kit(win.reader_notes.editor, PHOTO.parent, settle)
+notes_kit.ctrl_wheel(3)
+kept = []
+for date in (D, E5, D):
+    win._request_date(date)
+    settle()
+    kept.append(win.reader_notes.editor.text_edit.zoom_percent())
+check("[zoom] the Reader's Notes zoom survives note loads", kept == [130] * 3, kept)
+notes_kit.ctrl_wheel(-3)
+win.editor.zoom_spin.setValue(100)
+win.main_tabs.setCurrentWidget(win.projects_widget)
+project.show(win)
+win.projects_widget.editor.zoom_spin.setValue(130)
+settle()
+kept = []
+for pid in (font_project, project.pid, empty_project, project.pid):
+    win.projects_widget.refresh_project_list(select_id=pid)
+    settle()
+    kept.append(win.projects_widget.editor.text_edit.zoom_percent())
+check("[zoom] the Projects zoom survives project changes", kept == [130] * 4, kept)
+win.projects_widget.editor.zoom_spin.setValue(100)
+win.main_tabs.setCurrentWidget(win.daily_splitter)
+set_writing_font("Georgia", 13)
+
+
+# =========================================================== 4C1a-F1
+print("\n--- [4C1a-F1] settings changes and the Reader's Notes; blank stored documents; the toolbar after a load ---")
+from PySide6.QtGui import QFont  # noqa: E402
+from PySide6.QtWidgets import QFontComboBox  # noqa: E402
+from app.rich_editor import stored_document_font  # noqa: E402
+
+# F1a-1: after a writing-font, UI-font and theme change, both Reader's Notes
+# editors (holding content, at a non-100% zoom) stay unmodified, gain no undo
+# step and keep their zoom. Daily Jorts is in front, so the date notes are on
+# screen: there the UI-font change adds bug 38's padding undo steps.
+project.show(win)                               # loads the project notes (content)
+journal.show(win)                               # loads the date notes for D (content)
+date_editor, project_editor = win.reader_notes.editor, win.projects_widget.reader_notes.editor
+for editor, notches in ((date_editor, 2), (project_editor, -2)):
+    sd.Kit(editor, PHOTO.parent, settle).ctrl_wheel(notches)
+zooms = {date_editor: date_editor.text_edit.zoom_percent(), project_editor: project_editor.text_edit.zoom_percent()}
+check("[F1a-1] (setup) both Reader's Notes hold content, are unmodified and zoomed",
+      all(e.text_edit.toPlainText().strip() and not e.is_dirty() for e in zooms) and
+      sorted(zooms.values()) == [80, 120], zooms)
+for change, apply in (
+        ("writing font", lambda: win.db.set_setting("font_family", "Arial")),
+        ("UI font", lambda: win.db.set_setting("ui_font_size", "18")),
+        ("theme", lambda: win.db.set_setting("color_scheme", scheme_to_json(PRESETS["Dark"])))):
+    before = {e: e.text_edit.document().availableUndoSteps() for e in zooms}
+    apply()
+    win._apply_settings()
+    settle(200)
+    for editor, name in ((date_editor, "date Reader's Notes (on screen)"), (project_editor, "project Reader's Notes")):
+        check(f"[F1a-1] {change} change: {name} is not marked modified", not editor.is_dirty())
+        check(f"[F1a-1] {change} change: {name} keeps its zoom ({zooms[editor]}%)",
+              editor.text_edit.zoom_percent() == zooms[editor], editor.text_edit.zoom_percent())
+        undo_kept = editor.text_edit.document().availableUndoSteps() == before[editor]
+        label = f"[F1a-1] {change} change: {name} gains no undo step"
+        detail = f"{before[editor]} -> {editor.text_edit.document().availableUndoSteps()}"
+        if change == "UI font" and editor is date_editor:
+            known_failing(label, undo_kept, "bug 38 → 4C2", detail)
+        else:
+            check(label, undo_kept, detail)
+win.db.set_setting("font_family", "Georgia")
+win.db._conn.execute("DELETE FROM settings WHERE key='ui_font_size'")
+win.db._conn.commit()
+win.db.set_setting("color_scheme", scheme_to_json(PRESETS["Light"]))
+win._apply_settings()
+settle(200)
+for editor, notches in ((date_editor, -2), (project_editor, 2)):
+    sd.Kit(editor, PHOTO.parent, settle).ctrl_wheel(notches)
+
+# F1a-3: a stored blank document takes the current setting when loaded; a
+# written one, including an image-only one, keeps its stored font.
+set_writing_font("Georgia", 13)
+win.main_tabs.setCurrentWidget(win.projects_widget)
+settle()
+next(b for b in win.projects_widget.findChildren(QPushButton) if b.text() == "New Project").click()
+settle()
+blank_project = win.projects_widget.current_project_id
+edit = win.projects_widget.editor.text_edit
+edit.setFocus()
+QTest.keyClicks(edit, "gone")
+edit.selectAll()
+QTest.keyClick(edit, Qt.Key_Delete)
+ctrl_s(win, edit)
+stored_blank = project_row(win, blank_project)[0]
+check("[F1a-3] (setup) the blank project's row is an empty HTML page recording Georgia 13",
+      "<body" in stored_blank and body_font(stored_blank) == ("Georgia", 13.0)
+      and not project_row(win, blank_project)[0].split("<body", 1)[1].count("gone"), body_font(stored_blank))
+win.projects_widget.refresh_project_list(select_id=project.pid)
+settle()
+set_writing_font("Verdana", 18)
+win.projects_widget.refresh_project_list(select_id=blank_project)
+settle()
+check("[F1a-3] reopened after the setting changed to Verdana 18, the blank project is shown in Verdana 18",
+      shown_font(win.projects_widget.editor) == ("Verdana", 18.0), shown_font(win.projects_widget.editor))
+edit = win.projects_widget.editor.text_edit
+edit.setFocus()
+QTest.keyClicks(edit, "fresh words")
+ctrl_s(win, edit)
+check("[F1a-3] ...and the first typed words are stored in Verdana 18, with no font span",
+      body_font(project_row(win, blank_project)[0]) == ("Verdana", 18.0) and font_spans(project_row(win, blank_project)[0]) == 0,
+      f"{body_font(project_row(win, blank_project)[0])}, spans {font_spans(project_row(win, blank_project)[0])}")
+win.main_tabs.setCurrentWidget(win.daily_splitter)
+set_writing_font("Georgia", 13)
+E8 = "2026-04-12"
+win._request_date(E8)
+settle()
+image_kit = sd.Kit(win.editor, PHOTO.parent, settle)
+image_kit.with_photo(PHOTO)
+ctrl_s(win, win.editor.text_edit)
+image_row = entry_row(win, E8)
+check("[F1a-3] (setup) an image-only entry is stored in Georgia 13 and counts as written",
+      image_row is not None and body_font(image_row[0]) == ("Georgia", 13.0) and "<img" in image_row[0])
+win._request_date(E1)
+settle()
+set_writing_font("Arial", 20)
+win._request_date(E8)
+settle()
+state = (entry_row(win, E8), entry_versions(win, E8))
+ctrl_s(win, win.editor.text_edit)
+check("[F1a-3] the image-only entry keeps its stored font under Arial 20, and an unedited Ctrl+S writes nothing",
+      shown_font(win.editor) == ("Georgia", 13.0) and (entry_row(win, E8), entry_versions(win, E8)) == state,
+      shown_font(win.editor))
+set_writing_font("Georgia", 13)
+
+
+# F1a-4: right after a load, with no caret movement, the font and size boxes
+# show the loaded document's own font, in all four editors.
+def combo_shows(family):
+    """What a font box shows for `family` (an uninstalled family resolves to
+    a fallback, the same way in the editor's own box)."""
+    probe = QFontComboBox()
+    probe.setCurrentFont(QFont(family))
+    shown = probe.currentFont().family()
+    probe.deleteLater()
+    return shown
+
+
+def boxes(editor):
+    return editor.family_combo.currentFont().family(), editor.size_spin.value()
+
+
+def expected_boxes(family, size):
+    return combo_shows(family), int(round(size))
+
+
+win.main_tabs.setCurrentWidget(win.daily_splitter)
+results = []
+for date in (E6, E5, E6):                       # Times New Roman 16, Georgia 13, Times New Roman 16
+    win._request_date(date)
+    settle()
+    family, size = stored_document_font(entry_row(win, date)[0])
+    results.append((date, boxes(win.editor), expected_boxes(family, size)))
+check("[F1a-4] Daily Jorts: right after a load the font and size boxes show the entry's own font",
+      all(shown == expected for _d, shown, expected in results) and results[0][2] != results[1][2], results)
+win.main_tabs.setCurrentWidget(win.projects_widget)
+results = []
+for pid in (font_project, project.pid, font_project):       # Arial 20, Georgia 13, Arial 20
+    win.projects_widget.refresh_project_list(select_id=pid)
+    settle()
+    family, size = stored_document_font(project_row(win, pid)[0])
+    results.append((pid, boxes(win.projects_widget.editor), expected_boxes(family, size)))
+check("[F1a-4] Projects: right after a load the font and size boxes show the project's own font",
+      all(shown == expected for _p, shown, expected in results) and results[0][2] != results[1][2], results)
+# Reader's Notes: one note saved in the notes' own font, one holding the
+# journal's HTML (Georgia 13 in its <body>, written there as at [C2]).
+win.main_tabs.setCurrentWidget(win.daily_splitter)
+E9 = "2026-04-13"
+win._request_date(E9)
+settle()
+notes_edit = win.reader_notes.editor.text_edit
+notes_edit.setFocus()
+QTest.keyClicks(notes_edit, "a plain note")
+ctrl_s(win, notes_edit)
+win.db.save_notes("date", E5, entry_row(win, E5)[0], "html", "written in Georgia")
+win.db.save_notes("project", str(font_project), project_row(win, font_project)[0], "html", "project words")
+results = []
+for date in (E9, E5, E9):
+    win._request_date(date)
+    settle()
+    family, size = stored_document_font(notes_row(win, "date", date)[0])
+    results.append((date, boxes(win.reader_notes.editor), expected_boxes(family, size)))
+check("[F1a-4] date Reader's Notes: right after a load the font and size boxes show the note's own font",
+      all(shown == expected for _d, shown, expected in results) and results[0][2] != results[1][2], results)
+win.main_tabs.setCurrentWidget(win.projects_widget)
+results = []
+for pid in (project.pid, font_project, project.pid):
+    win.projects_widget.refresh_project_list(select_id=pid)
+    settle()
+    family, size = stored_document_font(notes_row(win, "project", pid)[0])
+    results.append((pid, boxes(win.projects_widget.reader_notes.editor), expected_boxes(family, size)))
+check("[F1a-4] project Reader's Notes: right after a load the font and size boxes show the note's own font",
+      all(shown == expected for _p, shown, expected in results) and results[0][2] != results[1][2], results)
+win.main_tabs.setCurrentWidget(win.daily_splitter)
+settle()
+
+
+# F1a-8 (4C1a-F1/AM-1): a load starts typing from the loaded document, not
+# from the previous document's caret. First a caret in text of another font.
+def caret_in_text_of(date):
+    win._request_date(date)
+    settle()
+    win.editor.text_edit.setFocus()
+    QTest.keyClick(win.editor.text_edit, Qt.Key_End, Qt.ControlModifier)
+    settle()
+
+
+win.main_tabs.setCurrentWidget(win.daily_splitter)
+set_writing_font("Georgia", 13)
+# The caret is left inside a run with an explicit font of its own (the stress
+# document's "familyone" word), so a carried-over insertion format would show.
+journal.show(win)
+family_kit = sd.Kit(win.editor, PHOTO.parent, settle)
+family_kit.place(family_kit.index_of("alpha familyone omega"), len("alpha familyo"))
+check("[F1a-8] (setup) the caret sits in text with an explicit font family",
+      bool(win.editor.text_edit.textCursor().charFormat().fontFamilies()),
+      win.editor.text_edit.textCursor().charFormat().fontFamilies())
+E10 = "2026-04-14"
+win._request_date(E10)
+settle()
+win.editor.text_edit.setFocus()
+QTest.keyClicks(win.editor.text_edit, "new entry words")
+ctrl_s(win, win.editor.text_edit)
+check("[F1a-8] after a caret in another font's text, text typed into a new entry stores no font span",
+      font_spans(entry_row(win, E10)[0]) == 0 and body_font(entry_row(win, E10)[0]) == ("Georgia", 13.0),
+      f"spans {font_spans(entry_row(win, E10)[0])}, body {body_font(entry_row(win, E10)[0])}")
+
+win.main_tabs.setCurrentWidget(win.projects_widget)
+project.show(win)                               # the stress project, its "familyone" word
+family_kit = sd.Kit(win.projects_widget.editor, PHOTO.parent, settle)
+family_kit.place(family_kit.index_of("alpha familyone omega"), len("alpha familyo"))
+check("[F1a-8] (setup) the project caret sits in text with an explicit font family",
+      bool(win.projects_widget.editor.text_edit.textCursor().charFormat().fontFamilies()))
+next(b for b in win.projects_widget.findChildren(QPushButton) if b.text() == "New Project").click()
+settle()
+fresh_project = win.projects_widget.current_project_id
+win.projects_widget.editor.text_edit.setFocus()
+QTest.keyClicks(win.projects_widget.editor.text_edit, "new project words")
+ctrl_s(win, win.projects_widget.editor.text_edit)
+check("[F1a-8] after a caret in another font's text, text typed into a new project stores no font span",
+      font_spans(project_row(win, fresh_project)[0]) == 0, font_spans(project_row(win, fresh_project)[0]))
+
+win.main_tabs.setCurrentWidget(win.daily_splitter)
+win._request_date(E5)                           # its note holds Georgia 13 in its <body>
+settle()
+notes_edit = win.reader_notes.editor.text_edit
+notes_edit.setFocus()
+QTest.keyClick(notes_edit, Qt.Key_End, Qt.ControlModifier)
+E11 = "2026-04-15"
+win._request_date(E11)
+settle()
+notes_edit = win.reader_notes.editor.text_edit
+notes_edit.setFocus()
+QTest.keyClicks(notes_edit, "new note words")
+ctrl_s(win, notes_edit)
+check("[F1a-8] after a Georgia note, text typed into a new Reader's Note stores no font span",
+      font_spans(notes_row(win, "date", E11)[0]) == 0, font_spans(notes_row(win, "date", E11)[0]))
+
+# A written document: typing at the start after loading keeps its formatting.
+E12, E13 = "2026-04-16", "2026-04-17"
+win._request_date(E12)
+settle()
+start_kit = sd.Kit(win.editor, PHOTO.parent, settle)
+start_kit.type("boldstart rest of line")
+start_kit.select_words("boldstart rest of line", "boldstart")
+start_kit.key(Qt.Key_B, Qt.ControlModifier)
+ctrl_s(win, win.editor.text_edit)
+win._request_date(E13)
+settle()
+start_kit = sd.Kit(win.editor, PHOTO.parent, settle)
+start_kit.type("Heading start")
+start_kit.place(0)
+start_kit.combo(win.editor.heading_combo, 2)
+ctrl_s(win, win.editor.text_edit)
+for date, typed, want, what in ((E12, "XX", {"weight": lambda w: w >= 600}, "bold"),
+                                (E13, "YY", {"weight": lambda w: w >= 600, "size": 16.0}, "the Heading 2")):
+    caret_in_text_of(E6)                        # coming from a document in another font
+    win._request_date(date)
+    settle()
+    QTest.keyClicks(win.editor.text_edit, typed)   # at the caret the load left (no movement)
+    ctrl_s(win, win.editor.text_edit)
+    stored = entry_row(win, date)[0]
+    fp = fp_of(stored)
+    run_ok = sd.Prop(what, "run", typed, want).found(fp)
+    heading_ok = what != "the Heading 2" or sd.Prop(what, "block", typed, {"heading": 2}).found(fp)
+    check(f"[F1a-8] typing at the start of a paragraph that starts with {what} continues {what} "
+          "and stores no font span", run_ok and heading_ok and font_spans(stored) == 0,
+          f"run {[r for r in fp.runs if typed in r.text]}, spans {font_spans(stored)}")
+set_writing_font("Georgia", 13)
 
 # =========================================================== end
 win.editor.mark_clean()

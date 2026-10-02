@@ -383,9 +383,9 @@ def context(kind: str, photo: Path) -> dict:
 TEXT = "Café naïve façade — 日本語 🙂 ✓"
 
 # Known failures recorded by the user (4-0/AM-6, AM-7, AM-13).
-BUG_33 = "bug 33 → 4C1"       # fractional paragraph spacing read back rounded
+BUG_33 = "bug 33 → 4C1b"      # fractional paragraph spacing read back rounded
 BUG_34 = "bug 34 → Group 7"   # the archive collapses tabs
-BUG_37 = "bug 37 → 4C1"       # Heading 3 at the writing size gains font-size:large
+BUG_37 = "bug 37 → 4C1b"      # Heading 3 at the writing size gains font-size:large
 
 
 def _blocks(document):

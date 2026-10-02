@@ -869,6 +869,15 @@ class MainWindow(QMainWindow):
             self.db.get_setting("writing_position", "free")
         )
         self.projects_widget.apply_font(family, size)
+        # The Reader's Notes editors never receive the writing font (4C1a-D2):
+        # a new, empty note starts in the application font just applied, and
+        # a note with content keeps its own stored font, which the
+        # application font and stylesheet above have just overridden on the
+        # widget (FP-5).
+        app_font = QApplication.font()
+        for notes_editor in (self.reader_notes.editor, self.projects_widget.reader_notes.editor):
+            notes_editor.follow_application_font(
+                app_font.family(), app_font.pointSizeF() if app_font.pointSizeF() > 0 else 13.0)
         self.calendar_panel.calendar.set_scheme(scheme)
         # Both calendars resolve a theme-following event's colour from this
         # scheme. They used to read it from the widget palette, which a Qt

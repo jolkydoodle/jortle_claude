@@ -64,6 +64,7 @@ from PySide6.QtWidgets import (
 
 from . import date_links
 from .paths import get_attachments_dir
+from .saving import document_has_content
 from .ui_util import font_scaled, make_shrinkable_combo
 
 # Spec Part 18. "free" means no repositioning code runs at all — the default,
@@ -144,6 +145,9 @@ class RichTextEditor(QTextEdit):
         self.setAcceptRichText(False)  # paste as plain text; formatting comes from our own toolbar
         self.setMouseTracking(True)
         self._current_relative_dir = ""  # "YYYY/MM" of the date/project currently being edited
+        # Set by RichEditor(link_dates=True): written dates navigate on click
+        # even before the next save/load has turned them into stored links.
+        self.recognise_dates = False
         # The real, saved writing-font size (points) — deliberately tracked
         # separately from self.font(), which reflects whatever zoom is
         # currently applied on top of this. Anything that bakes an explicit
@@ -174,6 +178,30 @@ class RichTextEditor(QTextEdit):
         self.reset_zoom()
         self._base_point_size = float(size)
         self.setFont(QFont(family, size))
+
+    def adopt_document_font(self, family: str, size: float):
+        """Makes `family`/`size` the writing font of the document about to be
+        loaded — its own stored font (4C1a-D1), or the new-document font.
+
+        Unlike set_base_font() this keeps the zoom level: it runs only just
+        before setHtml()/setMarkdown() replace the document, and
+        RichEditor.load() re-applies the active zoom afterwards
+        (reapply_zoom_after_load), exactly as for any other load. The font
+        must equal the stored <body> font before the HTML is read, or Qt
+        writes the stored font onto every character as explicit formatting
+        (bugs 29 and 35)."""
+        self._base_point_size = float(size)
+        font = QFont(family)
+        font.setPointSizeF(float(size))
+        self.setFont(font)
+
+    def zoom_default_font(self):
+        """Sets the document's default font to the current zoom level, as
+        _apply_zoom() does, without touching any character (no undo step)."""
+        doc = self.document()
+        default_font = QFont(doc.defaultFont())
+        default_font.setPointSizeF(max(1.0, self._base_point_size * self.zoom_percent() / 100.0))
+        doc.setDefaultFont(default_font)
 
     def base_font(self) -> QFont:
         """The real writing font at its SAVED size, with any active zoom
@@ -586,12 +614,19 @@ class RichTextEditor(QTextEdit):
         return cursor.charFormat().anchorHref()
 
     def mouseMoveEvent(self, event):
-        anchor = self._anchor_at(event.pos())
+        anchor = self._anchor_at(event.pos()) or self._unlinked_date_at(event.pos())
         self.viewport().setCursor(Qt.PointingHandCursor if anchor else Qt.IBeamCursor)
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
         anchor = self._anchor_at(event.pos())
+        if not anchor and not self.textCursor().hasSelection():
+            # A date typed since this entry was loaded is not a link in the
+            # live document (see "internal date links" below); it navigates
+            # exactly as a stored link does.
+            typed_date = self._unlinked_date_at(event.pos())
+            if typed_date:
+                anchor = date_links.link_href(typed_date)
         if anchor:
             internal_date = date_links.parse_link(anchor)
             if internal_date:
@@ -611,70 +646,25 @@ class RichTextEditor(QTextEdit):
         super().mouseReleaseEvent(event)
 
     # ------------------------------------------------- internal date links
-    def linkify_dates(self) -> bool:
-        """Applies journal://date/ links to every recognizable written date
-        that isn't already linked. Returns True if the document changed.
-
-        Runs from RichEditor.save(), i.e. on the ordinary autosave cadence,
-        rather than on every keystroke: re-scanning and re-formatting the
-        document while someone is mid-word would be both wasteful and
-        visually noisy (a half-typed "Septem" is not a date, and the text
-        would flicker into a link as they finished it).
-
-        Idempotent by construction — a range whose anchorHref already
-        matches is skipped, so repeated saves make no further edits and
-        therefore emit no further change signals. That's what stops
-        save-modifies-document from feeding back into schedule-another-save
-        forever.
-
-        The user's caret position is captured and restored around the pass,
-        because applying a char format moves the working cursor.
-        """
-        if self.isReadOnly():
-            return False
-
-        doc = self.document()
-        pending: list[tuple[int, int, str]] = []
-
-        block = doc.begin()
-        while block.isValid():
-            text = block.text()
-            if text.strip():
-                block_start = block.position()
-                for start, end, iso in date_links.find_dates(text):
-                    probe = QTextCursor(doc)
-                    probe.setPosition(block_start + start)
-                    probe.setPosition(block_start + end, QTextCursor.KeepAnchor)
-                    if probe.charFormat().anchorHref() == date_links.link_href(iso):
-                        continue
-                    pending.append((block_start + start, block_start + end, iso))
-            block = block.next()
-
-        if not pending:
-            return False
-
-        caret = self.textCursor().position()
-        had_selection = self.textCursor().hasSelection()
-
-        fmt = QTextCharFormat()
-        fmt.setAnchor(True)
-        fmt.setForeground(QColor("#3f8ede"))
-        fmt.setFontUnderline(True)
-
-        editor_cursor = QTextCursor(doc)
-        editor_cursor.beginEditBlock()
-        for start, end, iso in pending:
-            fmt.setAnchorHref(date_links.link_href(iso))
-            editor_cursor.setPosition(start)
-            editor_cursor.setPosition(end, QTextCursor.KeepAnchor)
-            editor_cursor.mergeCharFormat(fmt)
-        editor_cursor.endEditBlock()
-
-        if not had_selection:
-            restored = QTextCursor(doc)
-            restored.setPosition(min(caret, doc.characterCount() - 1))
-            self.setTextCursor(restored)
-        return True
+    # Dates are linked only in the copy that is saved (link_dates_in, called
+    # by RichEditor.save on export_document's clone), never in the live
+    # document: linking there was an edit of its own, so after Ctrl+S one
+    # Ctrl+Z undid the linking instead of the user's typing (bug 8, 4C1a-D3).
+    # A date typed since the entry was loaded is therefore plain text on
+    # screen until the next load; a plain click on it still navigates,
+    # recognised here at click time.
+    def _unlinked_date_at(self, pos: QPoint) -> str:
+        """The ISO date of a written date under `pos` that is not (yet) a
+        link in this document, or '' — only in editors that link dates."""
+        if not self.recognise_dates:
+            return ""
+        cursor = self.cursorForPosition(pos)
+        block = cursor.block()
+        offset = cursor.position() - block.position()
+        for start, end, iso in date_links.find_dates(block.text()):
+            if start <= offset < end or (offset == end and offset > start):
+                return iso
+        return ""
 
     def mouseDoubleClickEvent(self, event):
         cursor = self.cursorForPosition(event.pos())
@@ -721,6 +711,92 @@ def unwrap_root_frame(html: str) -> str:
     return (html[:opening.start()] + opening.group(1)
             + html[opening.end():closing.start()] + closing.group(1)
             + html[closing.end():])
+
+
+def link_dates_in(doc: "QTextDocument") -> bool:
+    """Applies journal://date/ links to every recognizable written date in
+    `doc` that isn't already linked. Returns True if it changed anything.
+
+    Called by RichEditor.save() on the copy that is stored (export_document's
+    clone), never on the live document — see RichTextEditor's "internal date
+    links" (bug 8). Idempotent: a range whose anchorHref already matches is
+    skipped, so a document whose dates are all linked is left untouched.
+    """
+    pending: list[tuple[int, int, str]] = []
+    block = doc.begin()
+    while block.isValid():
+        text = block.text()
+        if text.strip():
+            block_start = block.position()
+            for start, end, iso in date_links.find_dates(text):
+                probe = QTextCursor(doc)
+                probe.setPosition(block_start + start)
+                probe.setPosition(block_start + end, QTextCursor.KeepAnchor)
+                if probe.charFormat().anchorHref() == date_links.link_href(iso):
+                    continue
+                pending.append((block_start + start, block_start + end, iso))
+        block = block.next()
+    if not pending:
+        return False
+
+    fmt = QTextCharFormat()
+    fmt.setAnchor(True)
+    fmt.setForeground(QColor("#3f8ede"))
+    fmt.setFontUnderline(True)
+    cursor = QTextCursor(doc)
+    cursor.beginEditBlock()
+    for start, end, iso in pending:
+        fmt.setAnchorHref(date_links.link_href(iso))
+        cursor.setPosition(start)
+        cursor.setPosition(end, QTextCursor.KeepAnchor)
+        cursor.mergeCharFormat(fmt)
+    cursor.endEditBlock()
+    return True
+
+
+_FONT_PROPERTIES = (QTextFormat.FontFamilies, QTextFormat.FontFamily, QTextFormat.FontPointSize)
+
+
+def _clear_font_formats(doc: "QTextDocument"):
+    """Removes font family and size from every paragraph and character
+    format of a BLANK document (4C1a-F1/AM-1), so what is typed into it
+    inherits the document's default font. Never called on written text."""
+    cursor = QTextCursor(doc)
+    block = doc.begin()
+    while block.isValid():
+        block_format = block.charFormat()
+        for prop in _FONT_PROPERTIES:
+            block_format.clearProperty(prop)
+        cursor.setPosition(block.position())
+        cursor.setBlockCharFormat(block_format)
+        it = block.begin()
+        while not it.atEnd():
+            fragment = it.fragment()
+            if fragment.isValid():
+                fmt = fragment.charFormat()
+                for prop in _FONT_PROPERTIES:
+                    fmt.clearProperty(prop)
+                span = QTextCursor(doc)
+                span.setPosition(fragment.position())
+                span.setPosition(fragment.position() + fragment.length(), QTextCursor.KeepAnchor)
+                span.setCharFormat(fmt)
+            it += 1
+        block = block.next()
+
+
+# The document's own writing font, as Qt stores it in <body style="…">:
+# font-family:'Georgia'; font-size:13pt (4C1a-D1).
+_BODY_FONT_RE = re.compile(
+    r"<body\b[^>]*\bstyle=\"[^\"]*font-family:'([^']*)';\s*font-size:(\d+(?:\.\d+)?)pt")
+
+
+def stored_document_font(content: str):
+    """(family, point size) of the writing font stored with a document, or
+    None when it has none (legacy Markdown rows, empty documents)."""
+    match = _BODY_FONT_RE.search(content or "")
+    if not match:
+        return None
+    return match.group(1), float(match.group(2))
 
 
 def export_document(text_edit) -> "QTextDocument":
@@ -826,7 +902,17 @@ class RichEditor(QWidget):
         self.link_dates = link_dates
         self.text_edit = RichTextEditor()
         self.text_edit.setReadOnly(read_only)
+        self.text_edit.recognise_dates = link_dates and not read_only
         self.text_edit.dateLinkActivated.connect(self.dateLinkActivated.emit)
+        # The font a new, empty document starts in (4C1a-D1): the writing-font
+        # setting once set_font() has been called, otherwise the font this
+        # editor was built with (the Reader's Notes editors never receive the
+        # setting and keep the application font, 4C1a-D2).
+        self._new_document_font = (self.text_edit.font().family(),
+                                   self.text_edit.base_point_size())
+        # The font of the document now in the editor (its stored font, or the
+        # new-document font it started in) — what set_font() keeps it in.
+        self._document_font = self._new_document_font
 
         self._find_ranges: list[tuple[int, int]] = []
         self._find_current_index = -1
@@ -1687,10 +1773,41 @@ class RichEditor(QWidget):
         save() below) — a "markdown" row transparently upgrades to "html"
         the next time it's saved, it's never rewritten just by opening it."""
         self.text_edit.blockSignals(True)
+        # Each document keeps the writing font stored with it (4C1a-D1): the
+        # editor takes that font BEFORE the HTML is read, so Qt has nothing
+        # to write onto the characters as explicit formatting, and an
+        # unedited save gives back the same bytes whatever the setting is now.
+        # A document without a stored font (empty, legacy Markdown) starts in
+        # the new-document font. Zoom is kept (adopt_document_font).
+        own_font = stored_document_font(content) if fmt != "markdown" else None
+        self._document_font = own_font or self._new_document_font
+        self.text_edit.adopt_document_font(*self._document_font)
         if fmt == "markdown":
             self.text_edit.setMarkdown(content or "")
         else:
             self.text_edit.setHtml(unwrap_root_frame(content or ""))
+        # A stored document that is blank under the shared written/blank rule
+        # (an emptied page that still records an old font) is a new, empty
+        # document: it takes the current setting, as §14.9 says. A written one,
+        # including an image-only one, keeps its stored font (4C1a/AM-13).
+        # Nothing was written in it, so there is no text the font could be
+        # baked into.
+        if own_font is not None and not document_has_content(
+                self.text_edit.toHtml(), self.text_edit.toPlainText()):
+            self._document_font = self._new_document_font
+            self.text_edit.adopt_document_font(*self._document_font)
+            # Its empty paragraphs still carry the old font in their own
+            # formats (written there when the page was saved): clear it, so
+            # typed text inherits the document's font. No explicit font is set.
+            _clear_font_formats(self.text_edit.document())
+        # A fresh cursor: the editor's old cursor keeps the insertion format
+        # of the PREVIOUS document's caret across setHtml(), so text typed
+        # into a new document was stored in that document's font as explicit
+        # spans (4C1a-F1/AM-1, §14.9). A fresh cursor has no insertion format
+        # of its own; Qt takes it from the text at the caret — none in an
+        # empty document (typed text inherits the document's own font), the
+        # bold or heading text at the start of a written paragraph.
+        self.text_edit.setTextCursor(QTextCursor(self.text_edit.document()))
         self.text_edit.blockSignals(False)
         # setHtml()/setMarkdown() both rebuild the document's root frame,
         # which silently drops the bottom padding set up in
@@ -1712,6 +1829,9 @@ class RichEditor(QWidget):
         # genuine edit by them.
         self.text_edit.document().clearUndoRedoStacks()
         self.text_edit.document().setModified(False)
+        # The font and size boxes show the loaded document's own font at once,
+        # not the previous document's until the caret moves (4C1a-F1, F1-D3).
+        self._sync_toolbar_state()
 
     def save(self) -> tuple[str, str]:
         """Returns (html, plain_text) for persistence — see database.py's
@@ -1739,20 +1859,20 @@ class RichEditor(QWidget):
         # a read-only operation from the user's point of view, exactly as
         # it should be — it's meant to just report the content, never to
         # move the view."""
-        # Turn any newly-written dates into internal links before
-        # serializing, so the stored document and the on-screen document
-        # always agree about what's linked. Gated on link_dates because a
-        # Writing Project that happens to mention a date shouldn't gain a
-        # link that jumps the Daily Journal somewhere else.
-        if self.link_dates:
-            self.text_edit.linkify_dates()
-
         # Serialized from a CLONE — see export_document() for why. The live
         # document, its undo history and its modified flag are untouched by
         # saving, which is what makes Ctrl+Z after Ctrl+S undo the user's
         # edit rather than the save's own housekeeping.
         document = export_document(self.text_edit)
         try:
+            # Newly written dates become internal links in the stored copy
+            # only, never in the live document (bug 8, 4C1a-D3); on screen a
+            # typed date navigates on click anyway (RichTextEditor). Gated
+            # on link_dates because a Writing Project that happens to mention
+            # a date shouldn't gain a link that jumps the Daily Journal
+            # somewhere else.
+            if self.link_dates:
+                link_dates_in(document)
             html = document.toHtml()
             plain = document.toPlainText()
         finally:
@@ -1808,9 +1928,9 @@ class RichEditor(QWidget):
             spin.blockSignals(blocked)
 
     def set_font(self, family: str, size: int):
-        """Sets the DEFAULT writing font — the starting point for brand-new
-        entries and for any text that hasn't been individually resized —
-        as opposed to zoom (view-only) or the toolbar's own family/size
+        """Sets the DEFAULT writing font — the font brand-new, empty
+        documents start in; a document with content keeps the font stored
+        with it (see load()) — as opposed to zoom (view-only) or the toolbar's own family/size
         controls (which restyle a selection, like Bold/Italic, and never
         touch this default). Safe to call whether or not this editor has a
         toolbar (read-only preview editors don't build one).
@@ -1822,7 +1942,22 @@ class RichEditor(QWidget):
         they never touched. Same rule as zoom: the modified flag means the
         user changed the content, and nothing else may set it."""
         was_modified = self.text_edit.document().isModified()
-        self.text_edit.set_base_font(family, size)
+        # The setting is the font NEW documents start in (4C1a-D1, Master Spec
+        # §14.9 decided 2026-10-02). An empty, unwritten document open now
+        # takes it at once; a document with content keeps its own stored
+        # font. Either way zoom is reset as before (bug 6, left to 4C2).
+        self._new_document_font = (family, float(size))
+        document = self.text_edit.document()
+        if document_has_content(document.toHtml(), document.toPlainText()):
+            # Re-assert the document's own font, not the setting: the
+            # settings path has just applied the application font and the
+            # stylesheet, which override this widget's font (FP-5), and the
+            # document's font must not follow them.
+            self.text_edit.reset_zoom()
+            self.text_edit.adopt_document_font(*self._document_font)
+        else:
+            self.text_edit.set_base_font(family, size)
+            self._document_font = (family, float(size))
         self.text_edit.document().setModified(was_modified)
         if hasattr(self, "family_combo"):
             # Re-derive the toolbar's displayed family/size from the
@@ -1832,6 +1967,26 @@ class RichEditor(QWidget):
             # new default.
             self._sync_toolbar_state()
             self._update_zoom_label()
+
+    def follow_application_font(self, family: str, size: float):
+        """For editors that never receive the writing-font setting (Reader's
+        Notes, 4C1a-D2): a new, empty document starts in the application
+        font; a document with content keeps its own stored font. Called after
+        every settings change, because the application font and stylesheet
+        override this widget's font (FP-5). Keeps the zoom level and the
+        modified flag — unlike set_font(), it is not the settings' writing-font
+        route and leaves bug 6's zoom reset alone."""
+        document = self.text_edit.document()
+        was_modified = document.isModified()
+        self._new_document_font = (family, float(size))
+        if not document_has_content(document.toHtml(), document.toPlainText()):
+            self._document_font = self._new_document_font
+        self.text_edit.adopt_document_font(*self._document_font)
+        # Keep the zoom level on the default font only: re-applying zoom to
+        # the characters would be an undoable edit of an open document
+        # (FP-3); their zoomed sizes are untouched by a font change anyway.
+        self.text_edit.zoom_default_font()
+        document.setModified(was_modified)
 
     def append_note(self, label: str, text: str):
         """Appends a visually distinct block at the end of the document —
