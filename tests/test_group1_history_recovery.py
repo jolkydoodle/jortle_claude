@@ -28,7 +28,7 @@ from app import entry_history  # noqa: E402
 from app.entry_history import is_substantial_removal, removal  # noqa: E402
 from app.history_dialogs import EntryHistoryDialog, RecoveryDialog  # noqa: E402
 from app.main_window import MainWindow  # noqa: E402
-from app.saving import set_autosave_enabled  # noqa: E402
+from app.saving import document_has_content, set_autosave_enabled  # noqa: E402
 
 failures = []
 
@@ -581,8 +581,11 @@ blank = new_project("Blank before Recovery restore", long_text)
 open_project_afresh(blank)
 select_all_delete(pwid.editor)
 pwid.save_now()
-check("(setup) blanking the project stored HTML with no text",
-      db.get_project(blank).content_md and not db.get_project(blank).content_text.strip())
+# Stored blank under the shared rule: '' since 4C1b (bug 41; an older version
+# stored an empty HTML page — that shape is covered below as well).
+check("(setup) blanking the project stored it blank",
+      not document_has_content(db.get_project(blank).content_md or "", db.get_project(blank).content_text or ""),
+      repr((db.get_project(blank).content_md or "")[:40]))
 blank_cp = project_checkpoints(blank)[0]
 count = len(versions(blank))
 win._restore_recovery_checkpoint(blank_cp.id)
@@ -602,6 +605,52 @@ pwid._restore_version(long_version.id)
 settle()
 check("Version History restore over a blank project keeps no version of the blank state",
       len(versions(blank_v)) == count, f"{count} -> {len(versions(blank_v))}")
+
+# The same three checks with a blank row in the shape older versions stored
+# (an empty HTML page), written directly, so both stored shapes stay covered
+# (4C1b/AM-8).
+OLD_BLANK_PAGE = ('<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.0//EN"><html><head></head><body style=" '
+                  "font-family:'Georgia'; font-size:13pt; font-weight:400; font-style:normal;\">\n"
+                  '<p style="-qt-paragraph-type:empty; margin-top:0px; margin-bottom:0px; margin-left:0px; '
+                  'margin-right:0px; -qt-block-indent:0; text-indent:0px;"><br /></p></body></html>')
+
+
+def store_old_blank_page(pid):
+    db._conn.execute("UPDATE projects SET content_md=?, content_format='html', content_text='' WHERE id=?",
+                     (OLD_BLANK_PAGE, pid))
+    db._conn.commit()
+
+
+old_blank = new_project("Old-style blank before Recovery restore", long_text)
+open_project_afresh(old_blank)
+select_all_delete(pwid.editor)
+pwid.save_now()
+store_old_blank_page(old_blank)
+open_project_afresh(old_blank)
+check("(setup) the old-style blank project is an empty HTML page, blank under the shared rule",
+      db.get_project(old_blank).content_md == OLD_BLANK_PAGE
+      and not document_has_content(OLD_BLANK_PAGE, db.get_project(old_blank).content_text or ""))
+old_blank_cp = project_checkpoints(old_blank)[0]
+count = len(versions(old_blank))
+win._restore_recovery_checkpoint(old_blank_cp.id)
+settle()
+check("old-style blank page: Recovery restore keeps no version of the blank state",
+      len(versions(old_blank)) == count, f"{count} -> {len(versions(old_blank))}")
+check("old-style blank page: ...and restores the text", "Long paragraph 29" in db.get_project(old_blank).content_text)
+
+old_blank_v = new_project("Old-style blank before Version History restore", long_text)
+old_long_version = db.add_version(old_blank_v, db.get_project(old_blank_v).content_md, label="long",
+                                  content_format="html", content_text=long_text)
+open_project_afresh(old_blank_v)
+select_all_delete(pwid.editor)
+pwid.save_now()
+store_old_blank_page(old_blank_v)
+open_project_afresh(old_blank_v)
+count = len(versions(old_blank_v))
+pwid._restore_version(old_long_version.id)
+settle()
+check("old-style blank page: Version History restore keeps no version of the blank state",
+      len(versions(old_blank_v)) == count, f"{count} -> {len(versions(old_blank_v))}")
 
 dup = new_project("Already a version", "Current text that was saved as a version.")
 current = db.get_project(dup)

@@ -32,7 +32,7 @@ from .database import Database, FolderNotEmpty, InvalidMove
 from .reader_notes_widget import ReaderNotesWidget
 from .rich_editor import RichEditor
 from .entry_history import stored_state
-from .saving import CANCEL, SAVE, ask_unsaved, autosave_enabled
+from .saving import CANCEL, SAVE, ask_unsaved, autosave_enabled, document_has_content
 from .ui_util import side_pane_width
 
 AUTOSAVE_INTERVAL_MS = 1500
@@ -787,6 +787,15 @@ class ProjectsWidget(QWidget):
             return False
         html, plain = self.editor.save()
         project = self.db.get_project(self.current_project_id)
+        # A blank project is stored as '' (as a blank journal entry is), and a
+        # blank document over a blank stored row writes nothing — an old
+        # blank-page row included (bug 41; Invariants 5 and 7).
+        if not document_has_content(html, plain):
+            html, plain = "", ""
+            if project is not None and not document_has_content(project.content_md or "",
+                                                                project.content_text or ""):
+                self.editor.mark_clean()
+                return False
         if project is None or project.content_md == html:
             self.editor.mark_clean()
             return False

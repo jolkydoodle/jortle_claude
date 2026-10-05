@@ -182,14 +182,7 @@ def known_losses(where, fp, ctx, archive=False):
 # The changes the first reload + unedited Ctrl+S makes today, one per recorded
 # bug (4-0/AM-13). Each turns the first save's HTML into what the next save
 # stores; anything not explained by them is a new change and fails.
-FRACTIONAL_MARGIN_RE = re.compile(r"(margin-(?:top|bottom|left|right):)(\d+\.\d+)px")
-H3_SPAN_RE = re.compile(r'(<h3[^>]*><span style=")( font-weight:700;")')
-KNOWN_RESAVE_CHANGES = (
-    (sd.BUG_33, "fractional paragraph spacing is read back rounded (12.5px → 13px)",
-     lambda html: FRACTIONAL_MARGIN_RE.sub(lambda m: f"{m.group(1)}{int(float(m.group(2)) + 0.5)}px", html)),
-    (sd.BUG_37, "Heading 3 at the default size gains font-size:large",
-     lambda html: H3_SPAN_RE.sub(r"\1 font-size:large;\2", html)),
-)
+KNOWN_RESAVE_CHANGES = ()      # none at present: bugs 33 and 37 were fixed in 4C1b
 
 
 def triggers_in(editor):
@@ -546,6 +539,56 @@ for doc in DOCS:
           editor.text_edit.zoom_percent())
     fp3_checks("zoom +3 (Ctrl+wheel)", doc)
     kit.ctrl_wheel(-3)
+
+
+
+def insert_markdown_row(date, markdown):
+    win.db._conn.execute(
+        "INSERT INTO entries(date, body_md, body_format, body_text, created_at, updated_at) "
+        "VALUES(?, ?, 'markdown', ?, '2025-11-01T08:00:00', '2025-11-01T08:00:00')",
+        (date, markdown, " ".join(line.lstrip("# ") for line in markdown.splitlines() if line.strip())))
+    win.db._conn.commit()
+
+
+def heading_sizes(fp):
+    """The point size of the first run of the first H1, H2 and H3 paragraph."""
+    sizes = []
+    for level in (1, 2, 3):
+        block = next((b.index for b in fp.blocks if b.heading == level), None)
+        run = next((r for r in fp.runs if r.block == block and r.text.strip()), None)
+        sizes.append(round(run.size, 2) if run else None)
+    return sizes
+
+
+# 4C1b-F1/AM-1: a legacy Markdown entry with headings, viewed and upgraded at a
+# zoom: zoom never reaches what is stored (Qt's Markdown sizes at Georgia 13 are
+# 26 / 19.5 / 15.6 pt).
+C11_MD_DATE = "2025-11-10"
+insert_markdown_row(C11_MD_DATE, "# Zoom heading one\n\n## Zoom heading two\n\n### Zoom heading three\n\nZoom body.\n")
+win.main_tabs.setCurrentWidget(win.daily_splitter)
+win._request_date(OTHER)
+settle()
+win.editor.zoom_spin.setValue(130)
+settle()
+md_c11_state = (entry_row(win, C11_MD_DATE), entry_versions(win, C11_MD_DATE))
+win._request_date(C11_MD_DATE)
+settle()
+check("[C11] legacy Markdown entry with headings at zoom +3: viewing does not mark it modified and adds no undo step",
+      not win.editor.is_dirty() and win.editor.text_edit.document().availableUndoSteps() == 0,
+      win.editor.text_edit.document().availableUndoSteps())
+win._request_date(OTHER)
+settle()
+check("[C11] ...leaving it writes nothing", (entry_row(win, C11_MD_DATE), entry_versions(win, C11_MD_DATE)) == md_c11_state)
+win._request_date(C11_MD_DATE)
+settle()
+ctrl_s(win, win.editor.text_edit)
+check("[C11] ...and its upgrade on Ctrl+S stores the unzoomed heading sizes (26 / 19.5 / 15.6 pt)",
+      heading_sizes(fp_of(entry_row(win, C11_MD_DATE)[0])) == [26.0, 19.5, 15.6],
+      heading_sizes(fp_of(entry_row(win, C11_MD_DATE)[0])))
+win.editor.zoom_spin.setValue(100)
+settle()
+win._request_date(OTHER)
+settle()
 
 win.db.set_setting("ui_font_size", "20")
 win._apply_settings()
@@ -1120,12 +1163,20 @@ settle()
 next(b for b in win.projects_widget.findChildren(QPushButton) if b.text() == "New Project").click()
 settle()
 blank_project = win.projects_widget.current_project_id
-edit = win.projects_widget.editor.text_edit
-edit.setFocus()
-QTest.keyClicks(edit, "gone")
-edit.selectAll()
-QTest.keyClick(edit, Qt.Key_Delete)
-ctrl_s(win, edit)
+# A blank save stores '' since 4C1b (bug 41), so the empty HTML page an older
+# version stored for a blank project (recording Georgia 13, its <body> font
+# then) is written here directly, as such rows exist in older journals.
+win.db.save_project_content(
+    blank_project,
+    '<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.0//EN"><html><head></head><body style=" font-family:\'Georgia\';'
+    ' font-size:13pt; font-weight:400; font-style:normal;">\n<p style="-qt-paragraph-type:empty; margin-top:0px;'
+    ' margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;">'
+    '<span style=" font-family:\'Georgia\'; font-size:13pt;"><br /></span></p></body></html>',
+    content_format="html", content_text="")
+win.projects_widget.refresh_project_list(select_id=project.pid)
+settle()
+win.projects_widget.refresh_project_list(select_id=blank_project)
+settle()
 stored_blank = project_row(win, blank_project)[0]
 check("[F1a-3] (setup) the blank project's row is an empty HTML page recording Georgia 13",
       "<body" in stored_blank and body_font(stored_blank) == ("Georgia", 13.0)
@@ -1347,6 +1398,231 @@ for date, typed, want, what in ((E12, "XX", {"weight": lambda w: w >= 600}, "bol
           "and stores no font span", run_ok and heading_ok and font_spans(stored) == 0,
           f"run {[r for r in fp.runs if typed in r.text]}, spans {font_spans(stored)}")
 set_writing_font("Georgia", 13)
+
+
+# =========================================================== 4C1b
+print("\n--- [4C1b] headings, whole-number spacing, blank projects, legacy Markdown headings ---")
+from PySide6.QtWidgets import QTextEdit  # noqa: E402
+
+win.main_tabs.setCurrentWidget(win.daily_splitter)
+win.activateWindow()
+set_writing_font("Georgia", 13)
+
+
+def line_heights(editor, count):
+    """The first line's height of the first `count` paragraphs, as laid out."""
+    settle()
+    document = editor.text_edit.document()
+    return [round(document.findBlockByNumber(i).layout().lineAt(0).height(), 1) for i in range(count)]
+
+
+# C1b-1: headings stored as HTML render at their applied size after a reload,
+# and a reload + unedited Ctrl+S keeps the bytes.
+H_DATE = "2026-05-01"
+win._request_date(H_DATE)
+settle()
+heading_kit = sd.Kit(win.editor, PHOTO.parent, settle)
+heading_kit.type("Heading one here")
+heading_kit.key(Qt.Key_Return)
+heading_kit.type("Heading two here")
+heading_kit.key(Qt.Key_Return)
+heading_kit.type("Heading three here")
+for level in (1, 2, 3):
+    heading_kit.place(level - 1)
+    heading_kit.combo(win.editor.heading_combo, level)
+live_heights = line_heights(win.editor, 3)
+ctrl_s(win, win.editor.text_edit)
+first_heading_save = entry_row(win, H_DATE)
+win._request_date(E1)
+settle()
+win._request_date(H_DATE)
+settle()
+reloaded_heights = line_heights(win.editor, 3)
+check("[C1b-1] after a reload, H1–H3 render at their applied size (line heights equal the live document's)",
+      reloaded_heights == live_heights, f"live {live_heights}, reloaded {reloaded_heights}")
+ctrl_s(win, win.editor.text_edit)
+check("[C1b-1] ...and a reload + unedited Ctrl+S keeps the first save's bytes",
+      entry_row(win, H_DATE) == first_heading_save)
+for zoom in (120, 70):                          # 4C1b-F1/AM-1
+    win._request_date(H_DATE)
+    settle()
+    win.editor.zoom_spin.setValue(zoom)
+    settle()
+    zoomed_live = line_heights(win.editor, 3)
+    win._request_date(E1)
+    settle()
+    win._request_date(H_DATE)
+    settle()
+    zoomed_reload = line_heights(win.editor, 3)
+    ctrl_s(win, win.editor.text_edit)
+    check(f"[C1b-1] at {zoom}% zoom: after a reload H1–H3 render as before it, and an unedited Ctrl+S keeps the bytes",
+          zoomed_reload == zoomed_live and entry_row(win, H_DATE) == first_heading_save,
+          f"before {zoomed_live}, after {zoomed_reload}")
+    win.editor.zoom_spin.setValue(100)
+    settle()
+
+# C1b-2, C1b-3: the spacing boxes take whole numbers only and say px.
+for name, editor in (("Daily Jorts", win.editor), ("Projects", win.projects_widget.editor)):
+    boxes_ok = []
+    for spin in (editor.space_before_spin, editor.space_after_spin):
+        spin.setValue(12.5)
+        boxes_ok.append((spin.decimals(), spin.value(), spin.suffix().strip()))
+        spin.setValue(0)
+    check(f"[C1b-2] {name}: the spacing boxes take whole numbers only",
+          all(d == 0 and v == int(v) for d, v, _s in boxes_ok), boxes_ok)
+    check(f"[C1b-3] {name}: the spacing boxes say px", all(sfx == "px" for _d, _v, sfx in boxes_ok), boxes_ok)
+win.editor.mark_clean()
+win.projects_widget.editor.mark_clean()
+
+# C1b-4: bug 41 — a blank project is stored as '' and an unedited Ctrl+S on
+# a blank or never-written project writes nothing.
+win.main_tabs.setCurrentWidget(win.projects_widget)
+settle()
+next(b for b in win.projects_widget.findChildren(QPushButton) if b.text() == "New Project").click()
+settle()
+never_written = win.projects_widget.current_project_id
+before = project_row(win, never_written)
+ctrl_s(win, win.projects_widget.editor.text_edit)
+check("[C1b-4] an unedited Ctrl+S on a never-written project writes nothing",
+      project_row(win, never_written) == before, (before[0][:20], project_row(win, never_written)[0][:40]))
+edit = win.projects_widget.editor.text_edit
+edit.setFocus()
+QTest.keyClicks(edit, "short-lived")
+edit.selectAll()
+QTest.keyClick(edit, Qt.Key_Delete)
+ctrl_s(win, edit)
+check("[C1b-4] saving a blank project stores ''", project_row(win, never_written)[0] == "",
+      project_row(win, never_written)[0][:60])
+blank_state = project_row(win, never_written)
+set_writing_font("Verdana", 18)
+ctrl_s(win, win.projects_widget.editor.text_edit)
+check("[C1b-4] a writing-font change, then an unedited Ctrl+S on the blank project, writes nothing",
+      project_row(win, never_written) == blank_state)
+set_writing_font("Georgia", 13)
+old_blank_page = '<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.0//EN"><html><head></head><body style=" font-family:\'Georgia\'; font-size:13pt; font-weight:400; font-style:normal;">\n<p style="-qt-paragraph-type:empty; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;"><br /></p></body></html>'
+win.db.save_project_content(never_written, old_blank_page, content_format="html", content_text="")
+old_state = project_row(win, never_written)
+win.projects_widget.refresh_project_list(select_id=project.pid)
+settle()
+win.projects_widget.refresh_project_list(select_id=never_written)
+settle()
+ctrl_s(win, win.projects_widget.editor.text_edit)
+check("[C1b-4] an old blank-page project row is not rewritten by loading or by an unedited Ctrl+S",
+      project_row(win, never_written) == old_state)
+
+# C1b-5: written HTML rows with H1–H3 are never rewritten by loading or by an
+# unedited Ctrl+S — an entry (H_DATE) and a project.
+win.projects_widget.refresh_project_list(select_id=project.pid)
+settle()
+next(b for b in win.projects_widget.findChildren(QPushButton) if b.text() == "New Project").click()
+settle()
+heading_project = win.projects_widget.current_project_id
+project_kit = sd.Kit(win.projects_widget.editor, PHOTO.parent, settle)
+project_kit.type("Project heading one")
+project_kit.key(Qt.Key_Return)
+project_kit.type("Project heading two")
+project_kit.key(Qt.Key_Return)
+project_kit.type("Project heading three")
+for level in (1, 2, 3):
+    project_kit.place(level - 1)
+    project_kit.combo(win.projects_widget.editor.heading_combo, level)
+ctrl_s(win, win.projects_widget.editor.text_edit)
+win.projects_widget.refresh_project_list(select_id=project.pid)
+settle()
+seeded_headings = {"entry": (entry_row(win, H_DATE), entry_versions(win, H_DATE)),
+                   "project": (project_row(win, heading_project), project_versions(win, heading_project))}
+for _ in range(2):
+    win.projects_widget.refresh_project_list(select_id=heading_project)
+    settle()
+    ctrl_s(win, win.projects_widget.editor.text_edit)
+    win.projects_widget.refresh_project_list(select_id=project.pid)
+    settle()
+win.main_tabs.setCurrentWidget(win.daily_splitter)
+for _ in range(2):
+    win._request_date(H_DATE)
+    settle()
+    ctrl_s(win, win.editor.text_edit)
+    win._request_date(E1)
+    settle()
+check("[C1b-5] rows with H1–H3 (an entry and a project): loading and unedited Ctrl+S rewrite nothing",
+      {"entry": (entry_row(win, H_DATE), entry_versions(win, H_DATE)),
+       "project": (project_row(win, heading_project), project_versions(win, heading_project))} == seeded_headings)
+
+# C1b-8 (with 4C1b/AM-7): a legacy Markdown row with #, ## and ### headings
+# looks the same size as Qt's Markdown rendering, viewing it neither marks it
+# modified, nor adds an undo step, nor rewrites it, and its upgrade on save
+# stores headings that reload at that same size.
+MD_HEADINGS = "# Old heading one\n\n## Old heading two\n\n### Old heading three\n\nOld body text.\n"
+MD_DATE = "2025-11-07"
+win.db._conn.execute(
+    "INSERT INTO entries(date, body_md, body_format, body_text, created_at, updated_at) "
+    "VALUES(?, ?, 'markdown', ?, '2025-11-07T08:00:00', '2025-11-07T08:00:00')",
+    (MD_DATE, MD_HEADINGS, "Old heading one Old heading two Old heading three Old body text."))
+win.db._conn.commit()
+reference = QTextEdit()
+reference.setFont(QFont("Georgia", 13))
+reference.resize(800, 400)
+reference.show()
+reference.setMarkdown(MD_HEADINGS)
+settle()
+reference_heights = [round(reference.document().findBlockByNumber(i).layout().lineAt(0).height(), 1) for i in range(4)]
+reference.deleteLater()
+md_state = (entry_row(win, MD_DATE), entry_versions(win, MD_DATE))
+win._request_date(MD_DATE)
+settle()
+viewed_heights = line_heights(win.editor, 4)
+check("[C1b-8] a legacy Markdown entry's headings look the same size as Qt's Markdown rendering",
+      viewed_heights == reference_heights, f"viewed {viewed_heights}, Qt's Markdown {reference_heights}")
+check("[C1b-8] viewing it does not mark it modified", not win.editor.is_dirty())
+check("[C1b-8] viewing it adds no undo step", win.editor.text_edit.document().availableUndoSteps() == 0,
+      win.editor.text_edit.document().availableUndoSteps())
+win._request_date(E1)
+settle()
+check("[C1b-8] viewing it never rewrites the row", (entry_row(win, MD_DATE), entry_versions(win, MD_DATE)) == md_state)
+win._request_date(MD_DATE)
+settle()
+ctrl_s(win, win.editor.text_edit)               # the approved upgrade to HTML (4-0/AM-1)
+upgraded = entry_row(win, MD_DATE)
+win._request_date(E1)
+settle()
+win._request_date(MD_DATE)
+settle()
+upgraded_heights = line_heights(win.editor, 4)
+check("[C1b-8] its upgrade on save stores HTML headings that reload at the same size",
+      upgraded[1] == "html" and upgraded_heights == reference_heights and font_spans(upgraded[0]) == 0,
+      f"format {upgraded[1]}, reloaded {upgraded_heights}, Qt's Markdown {reference_heights}, spans {font_spans(upgraded[0])}")
+win._request_date(E1)
+settle()
+
+# C1b-8 at 120% and 70% zoom (4C1b-F1/AM-1): shown at Qt's Markdown size times
+# the zoom, stored at Qt's Markdown size, and after a reload at 100% the same
+# as Qt's Markdown rendering.
+for zoom, md_date in ((120, "2025-11-08"), (70, "2025-11-09")):
+    insert_markdown_row(md_date, MD_HEADINGS)
+    win._request_date(E1)
+    settle()
+    win.editor.zoom_spin.setValue(zoom)
+    settle()
+    win._request_date(md_date)
+    settle()
+    shown = heading_sizes(sd.fingerprint(win.editor.text_edit.document()))
+    expected = [round(size * zoom / 100, 2) for size in (26.0, 19.5, 15.6)]
+    check(f"[C1b-8] at {zoom}% zoom: a legacy Markdown entry's headings show at Qt's Markdown size times the zoom",
+          all(a is not None and abs(a - b) < 0.05 for a, b in zip(shown, expected)), f"shown {shown}, expected {expected}")
+    ctrl_s(win, win.editor.text_edit)
+    stored_sizes = heading_sizes(fp_of(entry_row(win, md_date)[0]))
+    check(f"[C1b-8] at {zoom}% zoom: its upgrade on save stores Qt's Markdown sizes (26 / 19.5 / 15.6 pt), not zoomed ones",
+          stored_sizes == [26.0, 19.5, 15.6], stored_sizes)
+    win.editor.zoom_spin.setValue(100)
+    settle()
+    win._request_date(E1)
+    settle()
+    win._request_date(md_date)
+    settle()
+    check(f"[C1b-8] at {zoom}% zoom: ...and reloaded at 100% it looks like Qt's Markdown rendering",
+          line_heights(win.editor, 4) == reference_heights, f"{line_heights(win.editor, 4)} vs {reference_heights}")
+    win._request_date(E1)
+    settle()
 
 # =========================================================== end
 win.editor.mark_clean()

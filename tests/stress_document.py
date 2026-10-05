@@ -382,50 +382,18 @@ def context(kind: str, photo: Path) -> dict:
 
 TEXT = "Café naïve façade — 日本語 🙂 ✓"
 
-# Known failures recorded by the user (4-0/AM-6, AM-7, AM-13).
-BUG_33 = "bug 33 → 4C1b"      # fractional paragraph spacing read back rounded
+# Known failures recorded by the user (4-0/AM-7). Bugs 33 and 37 were fixed in
+# 4C1b (whole-number spacing; Qt's heading size bump removed at load).
 BUG_34 = "bug 34 → Group 7"   # the archive collapses tabs
-BUG_37 = "bug 37 → 4C1b"      # Heading 3 at the writing size gains font-size:large
-
-
-def _blocks(document):
-    block = document.begin()
-    while block.isValid():
-        yield block
-        block = block.next()
-
-
-def _fractional_spacing(document, writing_size):
-    return any(b.blockFormat().topMargin() % 1 or b.blockFormat().bottomMargin() % 1
-               for b in _blocks(document))
-
-
-def _heading3_at_writing_size_not_yet_reloaded(document, writing_size):
-    """A Heading 3 whose text is at the writing size and has no size bump:
-    Qt adds a +1 size adjustment to <h3> text it reads back from saved HTML
-    (4-0-F1/AM-3), so text that has been through a reload never matches."""
-    for block in _blocks(document):
-        if block.blockFormat().headingLevel() != 3:
-            continue
-        it = block.begin()
-        while not it.atEnd():
-            fmt = it.fragment().charFormat()
-            if (fmt.fontPointSize() == writing_size
-                    and not fmt.hasProperty(QTextFormat.FontSizeAdjustment)):
-                return True
-            it += 1
-    return False
 
 
 # The content in this document that each known RELOAD change acts on (4-0-F1):
 # the first reload + unedited Ctrl+S rewrites a document that holds it. Read
 # from the live editor's document BEFORE its first save, never from the first
 # save, so a change that alters the first save cannot hide the known failure.
-# {bug: (what the content is, test(QTextDocument, writing size))}
-RELOAD_TRIGGERS = {
-    BUG_33: ("paragraph spacing with a fraction (the 12.5 pt section)", _fractional_spacing),
-    BUG_37: ("Heading 3 at the writing size, not yet reloaded", _heading3_at_writing_size_not_yet_reloaded),
-}
+# {bug: (what the content is, test(QTextDocument, writing size))}. None at
+# present: bugs 33 and 37, the two it held, were fixed in 4C1b.
+RELOAD_TRIGGERS = {}
 
 
 def _blank_apply(kit, ctx):
@@ -572,21 +540,19 @@ def _line_expect(ctx):
 def _spacing_apply(kit, ctx):
     kit.place(kit.index_of("Space six before"))
     kit.spin(kit.editor.space_before_spin, 6)
-    kit.place(kit.index_of("Space twelve and a half after"))
-    kit.spin(kit.editor.space_after_spin, 12.5)
+    kit.place(kit.index_of("Space twelve after"))
+    kit.spin(kit.editor.space_after_spin, 12)
     kit.place(kit.index_of("Space before and after"))
     kit.spin(kit.editor.space_before_spin, 6)
-    kit.spin(kit.editor.space_after_spin, 12.5)
+    kit.spin(kit.editor.space_after_spin, 12)
 
 
 def _spacing_expect(ctx):
-    lost = {"stored": BUG_33, "archive": BUG_33}     # 12.5 is read back as 13
+    # Whole numbers only since 4C1b (bug 33): the spacing boxes take no fraction.
     return [Prop("no extra spacing", "block", "Space none at all", {"top": 0.0, "bottom": 0.0}),
-            Prop("6 pt before", "block", "Space six before", {"top": 6.0, "bottom": 0.0}),
-            Prop("12.5 pt after", "block", "Space twelve and a half after", {"top": 0.0, "bottom": 12.5},
-                 known=lost),
-            Prop("6 before and 12.5 after", "block", "Space before and after", {"top": 6.0, "bottom": 12.5},
-                 known=lost)]
+            Prop("6 px before", "block", "Space six before", {"top": 6.0, "bottom": 0.0}),
+            Prop("12 px after", "block", "Space twelve after", {"top": 0.0, "bottom": 12.0}),
+            Prop("6 before and 12 after", "block", "Space before and after", {"top": 6.0, "bottom": 12.0})]
 
 
 def _indent_apply(kit, ctx):
@@ -679,7 +645,7 @@ SECTIONS: list = [
     Section("alignment", ["Centred paragraph text", "Right aligned paragraph text",
                           "Justified paragraph text", "Left again paragraph text"], _align_apply, _align_expect),
     Section("line spacing", [t for t, _, _ in _SPACINGS], _line_apply, _line_expect),
-    Section("paragraph spacing", ["Space none at all", "Space six before", "Space twelve and a half after",
+    Section("paragraph spacing", ["Space none at all", "Space six before", "Space twelve after",
                                   "Space before and after"], _spacing_apply, _spacing_expect),
     Section("indentation", ["Indent level one", "Indent level two", "Indent two then back one"],
             _indent_apply, _indent_expect),

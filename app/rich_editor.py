@@ -194,6 +194,12 @@ class RichTextEditor(QTextEdit):
         font = QFont(family)
         font.setPointSizeF(float(size))
         self.setFont(font)
+        # The document's own default font too, at the UNZOOMED size: setFont()
+        # does not reach it when the widget's font is unchanged, and zoom sets
+        # it to the zoomed size. Sizes Qt derives from it while loading (a
+        # legacy Markdown heading's, 4C1b-D1) must not include the zoom, or
+        # the zoom would be stored (4C1b-F1); the zoom is re-applied after.
+        self.document().setDefaultFont(font)
 
     def zoom_default_font(self):
         """Sets the document's default font to the current zoom level, as
@@ -754,6 +760,31 @@ def link_dates_in(doc: "QTextDocument") -> bool:
     return True
 
 
+def _settle_heading_sizes(doc: "QTextDocument", keep_size: bool):
+    """Removes the size bump (QTextFormat.FontSizeAdjustment) Qt puts on the
+    text of headings it reads back. With keep_size the bumped size is first
+    written onto the text as an explicit point size, so it looks the same and
+    survives the upgrade to HTML (legacy Markdown rows); without it the text
+    keeps the size stored with it (HTML rows, bug 37). Headings only."""
+    block = doc.begin()
+    while block.isValid():
+        if block.blockFormat().headingLevel() > 0:
+            it = block.begin()
+            while not it.atEnd():
+                fragment = it.fragment()
+                fmt = fragment.charFormat()
+                if fragment.isValid() and fmt.hasProperty(QTextFormat.FontSizeAdjustment):
+                    if keep_size:
+                        fmt.setFontPointSize(fmt.font().pointSizeF())
+                    fmt.clearProperty(QTextFormat.FontSizeAdjustment)
+                    span = QTextCursor(doc)
+                    span.setPosition(fragment.position())
+                    span.setPosition(fragment.position() + fragment.length(), QTextCursor.KeepAnchor)
+                    span.setCharFormat(fmt)
+                it += 1
+        block = block.next()
+
+
 _FONT_PROPERTIES = (QTextFormat.FontFamilies, QTextFormat.FontFamily, QTextFormat.FontPointSize)
 
 
@@ -1157,11 +1188,14 @@ class RichEditor(QWidget):
         paragraph spacing is never specified to a hundredth of a point and
         the extra digit was pure width.
         """
+        # Whole pixels (4C1b, bugs 33 and Q5): Qt's paragraph margins are
+        # pixels, stored as `margin-…:12px`, and Qt reads a fractional value
+        # back rounded, so a fraction could not survive a reload.
         spin = QDoubleSpinBox()
         spin.setRange(0, self.SPACING_MAX_PT)
-        spin.setDecimals(1)
+        spin.setDecimals(0)
         spin.setSingleStep(2)
-        spin.setSuffix(" pt")
+        spin.setSuffix(" px")
         spin.setToolTip(tooltip)
         spin.setKeyboardTracking(False)  # don't apply half-typed values
         spin.setValue(self.SPACING_MAX_PT)
@@ -1786,6 +1820,15 @@ class RichEditor(QWidget):
             self.text_edit.setMarkdown(content or "")
         else:
             self.text_edit.setHtml(unwrap_root_frame(content or ""))
+        # Headings: Qt adds its own size bump to heading text it reads back
+        # (+3 / +2 / +1 for H1–H3). From HTML that bump is spurious — the
+        # size the user applied is already stored — so it is removed, and the
+        # heading shows and re-saves exactly as written (bug 37). From a
+        # legacy Markdown row it is the heading's only size, so it is made
+        # explicit and the upgrade on save keeps it (4C1b-D1). Done here,
+        # before the document is marked unmodified and its undo history
+        # cleared (4C1b/AM-7).
+        _settle_heading_sizes(self.text_edit.document(), keep_size=(fmt == "markdown"))
         # A stored document that is blank under the shared written/blank rule
         # (an emptied page that still records an old font) is a new, empty
         # document: it takes the current setting, as §14.9 says. A written one,
