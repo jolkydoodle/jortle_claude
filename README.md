@@ -120,7 +120,7 @@ dividers between them:
   from the actual writing font/size above, resets each time you reopen the
   app, and is never saved into the entry itself.
 
-  **Ctrl+F finds text in the current entry** (also the 🔍 toolbar button):
+  **Ctrl+F (Edit → Find) finds text in the editor you are using**:
   a small bar drops in above the writing area with a match count, Prev/Next
   buttons, and Enter/Shift+Enter to step forward/backward through matches
   (Esc closes it). It's find-only — there's no replace — and it never
@@ -318,7 +318,7 @@ There are **three separate zooms in this app, and they stay separate**:
 ```
 calendar zoom        how tall an hour is on the timeline        Ctrl+scroll on a timeline
 editor zoom          how big your writing looks, temporarily    Ctrl+scroll in the editor
-application font     the size of the whole UI                   File → Settings
+application font     the size of the whole UI                   Settings → Appearance
 ```
 
 Calendar zoom is one setting shared by the Day View and the Week View —
@@ -329,7 +329,7 @@ Settings.
 
 ### Work hours
 
-**File → Settings → Calendar → "Highlight work hours"** tints 9:00 AM to
+**Settings → Calendar → "Highlight work hours"** (or View → Highlight Work Hours) tints 9:00 AM to
 5:00 PM, Monday to Friday, on both timelines. It's off by default, it's
 purely a background tint, and it changes nothing else: events outside it
 are ordinary events, you can still create and drag anything anywhere, and
@@ -385,7 +385,7 @@ transparency, over any background, in any theme.
 ```
 Ctrl+S            save the workspace you're in, right now
 Ctrl+Z / Ctrl+Y   undo / redo your writing
-File → Settings → Saving → "Enable autosave"
+Settings → General → "Enable autosave"
 ```
 
 **Manual saving is the default.** `Ctrl+S` saves whatever you're working
@@ -477,8 +477,10 @@ width and grows with the application font size.
 
 ## Settings
 
-There is one settings window, `File → Settings`, and every control in it
-applies the moment you change it — no Save button. It scrolls and its text
+There is one settings window, with the pages General, Editor, Hotkeys,
+Calendar, Appearance and Backups; each entry of the Settings menu opens it
+at that page. Every control in it applies the moment you change it — no
+Save button. It scrolls and its text
 wraps, so nothing runs off a small screen at any interface font size.
 
 There used to be a second window, `File → Experimental Settings`, holding
@@ -513,7 +515,7 @@ deliberately when you want to reclaim space.
 
 ## Color schemes
 
-File → Settings now offers a dozen built-in color schemes — Light, Dark,
+Settings → Appearance offers a dozen built-in color schemes — Light, Dark,
 Sepia, Slate, Forest, Ocean, Rose Quartz, Charcoal, Solarized Light,
 Solarized Dark, Midnight, and High Contrast — plus five color swatches
 (Background, Panels, Text, Accent, Border). Click any swatch to change

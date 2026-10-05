@@ -1,6 +1,8 @@
-"""File → Settings: ordinary, core application preferences — the window color
-scheme, the default writing font, the writing position, and the app's own
-interface text size. Every control here applies and saves immediately when
+"""The Settings window: ordinary, core application preferences — the window
+color scheme, the default writing font, the writing position, and the app's
+own interface text size. It has pages (General, Editor, Hotkeys, Calendar,
+Appearance, Backups), and each entry of the Settings menu opens this one
+window at its page (G4-D3, batch 4A). Every control here applies and saves immediately when
 you change it — there's no separate Save button to remember to click, so you
 can flip through color schemes and see the whole app update live. "Close"
 just dismisses the dialog; there's nothing left to discard.
@@ -40,14 +42,15 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QColorDialog, QComboBox, QDialog, QDialogButtonBox, QFontComboBox,
-    QFormLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QScrollArea, QSpinBox,
-    QVBoxLayout, QWidget
+    QFormLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget, QPushButton, QScrollArea,
+    QSpinBox, QStackedWidget, QVBoxLayout, QWidget
 )
 
 from . import rich_editor
 from .calendar_prefs import WORK_HOURS_SETTING
 from .saving import AUTOSAVE_SETTING, autosave_enabled
 from .database import Database
+from .help_dialogs import shortcuts_table
 from .ui_util import make_shrinkable_combo
 from .theme import PRESETS, ColorScheme, scheme_from_json, scheme_to_json
 
@@ -66,13 +69,21 @@ SWATCH_FIELDS = [
 
 
 class SettingsDialog(QDialog):
+    # The pages, in order; the Settings menu has one entry per page.
+    PAGES = ("general", "editor", "hotkeys", "calendar", "appearance", "backups")
+    PAGE_TITLES = {"general": "General", "editor": "Editor", "hotkeys": "Hotkeys",
+                   "calendar": "Calendar", "appearance": "Appearance", "backups": "Backups"}
+
     def __init__(self, db: Database, on_change: Callable[[], None], parent=None,
                  set_autosave: Callable[[bool], None] | None = None,
-                 open_backups: Callable[[], None] | None = None):
+                 open_backups: Callable[[], None] | None = None,
+                 set_work_hours: Callable[[bool], None] | None = None,
+                 page: str = "general"):
         super().__init__(parent)
         self.db = db
         self.on_change = on_change
         self._set_autosave = set_autosave
+        self._set_work_hours = set_work_hours
         self._open_backups = open_backups
         self.setWindowTitle("Settings")
 
@@ -170,22 +181,6 @@ class SettingsDialog(QDialog):
             swatch_row.addLayout(col)
         self._refresh_swatches()
 
-        form = QFormLayout()
-        # Responsive rather than fixed-width (Parts 13/42): long labels wrap
-        # onto their own row instead of squeezing the control or forcing a
-        # horizontal scrollbar when the application font size goes up, and
-        # the controls take the width that's left rather than a fixed one.
-        form.setRowWrapPolicy(QFormLayout.WrapLongRows)
-        form.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
-        form.setLabelAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        form.addRow("Default writing font:", self.font_combo)
-        form.addRow("Default writing size:", self.size_spin)
-        form.addRow("Writing position:", self.writing_position_combo)
-        form.addRow("Color scheme:", self.scheme_combo)
-        form.addRow("Tweak colors:", swatch_row)
-        form.addRow("Application font size:", self.ui_size_spin)
-        form.addRow("Saving:", self.autosave_check)
-        form.addRow("Calendar:", self.work_hours_check)
         # The backup folder is visible here (Master Spec §46.1); everything
         # about backups and encryption is managed in one window, reached from
         # here and from the File menu.
@@ -208,38 +203,90 @@ class SettingsDialog(QDialog):
         backup_row = QHBoxLayout()
         backup_row.addLayout(backup_text, 1)
         backup_row.addWidget(manage, 0, Qt.AlignTop)
-        form.addRow("Backups:", backup_row)
 
-        # Part 36: the same scroll/wrap treatment the Experimental dialog
-        # needs. This page is short today, but it grows with the application
-        # font size like everything else, and a settings window that can't be
-        # closed at ui_font_size 24 is exactly the failure being designed out.
-        content = QWidget()
-        content_layout = QVBoxLayout(content)
-        content_layout.setContentsMargins(0, 0, 0, 0)
-        content_layout.addLayout(form)
-        content_layout.addStretch(1)
+        # Hotkeys: the current shortcuts, read-only, from the command table —
+        # the same list as Help → Keyboard Shortcuts (4A/AM-3).
+        self.hotkeys_table = shortcuts_table()
 
-        self._content = content
-        scroll = self._scroll = QScrollArea()
-        scroll.setWidget(content)
-        scroll.setWidgetResizable(True)
-        # AsNeeded, not AlwaysOff: labels wrap and combos elide, so the bar
-        # should never appear in practice — but on a display too small even
-        # for the wrapped layout, scrolling to a control beats clipping it.
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        scroll.setFrameShape(QScrollArea.NoFrame)
+        # The rows are the ones this window always had, each on its page.
+        rows = {
+            "general": [("Saving:", self.autosave_check)],
+            "editor": [("Default writing font:", self.font_combo),
+                       ("Default writing size:", self.size_spin),
+                       ("Writing position:", self.writing_position_combo)],
+            "hotkeys": [(None, self.hotkeys_table)],
+            "calendar": [("Calendar:", self.work_hours_check)],
+            "appearance": [("Color scheme:", self.scheme_combo),
+                           ("Tweak colors:", swatch_row),
+                           ("Application font size:", self.ui_size_spin)],
+            "backups": [("Backups:", backup_row)],
+        }
+
+        # Part 36: every page scrolls and wraps. A page is short today, but it
+        # grows with the application font size like everything else, and a
+        # settings window that can't be closed at ui_font_size 24 is exactly
+        # the failure being designed out.
+        self.page_list = QListWidget()
+        self.pages = QStackedWidget()
+        self._contents: dict[str, QWidget] = {}
+        self._scrolls: dict[str, QScrollArea] = {}
+        for key in self.PAGES:
+            form = QFormLayout()
+            # Responsive rather than fixed-width (Parts 13/42): long labels
+            # wrap onto their own row instead of squeezing the control or
+            # forcing a horizontal scrollbar when the application font size
+            # goes up, and the controls take the width that's left.
+            form.setRowWrapPolicy(QFormLayout.WrapLongRows)
+            form.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
+            form.setLabelAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+            for label, field in rows[key]:
+                if label is None:
+                    form.addRow(field)
+                else:
+                    form.addRow(label, field)
+            content = QWidget()
+            content_layout = QVBoxLayout(content)
+            content_layout.setContentsMargins(0, 0, 0, 0)
+            content_layout.addLayout(form)
+            if key != "hotkeys":
+                content_layout.addStretch(1)
+            scroll = QScrollArea()
+            scroll.setWidget(content)
+            scroll.setWidgetResizable(True)
+            # AsNeeded, not AlwaysOff: labels wrap and combos elide, so the bar
+            # should never appear in practice — but on a display too small even
+            # for the wrapped layout, scrolling to a control beats clipping it.
+            scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            scroll.setFrameShape(QScrollArea.NoFrame)
+            self._contents[key] = content
+            self._scrolls[key] = scroll
+            self.pages.addWidget(scroll)
+            self.page_list.addItem(self.PAGE_TITLES[key])
+        self.page_list.currentRowChanged.connect(self.pages.setCurrentIndex)
+        self.page_list.setFixedWidth(self.page_list.sizeHintForColumn(0)
+                                     + 2 * self.page_list.frameWidth() + 16)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Close)
         buttons.rejected.connect(self.accept)
         buttons.accepted.connect(self.accept)
 
+        body = QHBoxLayout()
+        body.addWidget(self.page_list)
+        body.addWidget(self.pages, stretch=1)
         layout = QVBoxLayout(self)
-        layout.addWidget(scroll, stretch=1)
-        layout.addWidget(buttons)  # outside the scroll area: always reachable
+        layout.addLayout(body, stretch=1)
+        layout.addWidget(buttons)  # outside the scroll areas: always reachable
 
+        self.show_page(page)
         self.setMinimumSize(MIN_WIDTH, MIN_HEIGHT)
         self.resize(*self._starting_size())
+
+    def show_page(self, key: str):
+        """Shows one page: what each Settings menu entry asks for."""
+        self.page_list.setCurrentRow(self.PAGES.index(key))
+
+    def current_page(self) -> str:
+        return self.PAGES[self.pages.currentIndex()]
 
     def _backup_summary(self) -> tuple[str, str]:
         """(backup folder, encryption status line)."""
@@ -276,7 +323,10 @@ class SettingsDialog(QDialog):
         here is what left the dialog too narrow for its own controls once
         the interface font grew.
         """
-        needed = self._content.minimumSizeHint().width() + self._chrome_width()
+        # Measured over every page, so moving between pages never needs a
+        # wider or taller window than the one that opened.
+        contents = list(self._contents.values())
+        needed = max(c.minimumSizeHint().width() for c in contents) + self._chrome_width()
         width = max(PREFERRED_WIDTH, needed)
         # Height follows the same rule: show the whole page if the screen
         # allows it, and scroll only when it genuinely doesn't fit. Measured
@@ -284,9 +334,12 @@ class SettingsDialog(QDialog):
         # taller in a narrow window), not from the dialog's own size hint —
         # a scroll area's hint says nothing about what's inside it.
         inner_width = width - self._chrome_width()
-        content_height = self._content.heightForWidth(inner_width)
-        if content_height <= 0:
-            content_height = self._content.sizeHint().height()
+        content_height = 0
+        for content in contents:
+            page_height = content.heightForWidth(inner_width)
+            if page_height <= 0:
+                page_height = content.sizeHint().height()
+            content_height = max(content_height, page_height)
         height = max(PREFERRED_HEIGHT, content_height + self._chrome_height())
         screen = QApplication.primaryScreen()
         if screen is not None:
@@ -296,11 +349,13 @@ class SettingsDialog(QDialog):
         return max(MIN_WIDTH, width), max(MIN_HEIGHT, height)
 
     def _chrome_width(self) -> int:
-        """Window margins plus room for the vertical scrollbar, so the
-        content isn't squeezed by the bar that appears next to it."""
+        """Window margins, the page list, and room for the vertical
+        scrollbar, so the content isn't squeezed by the bar that appears
+        next to it."""
         margins = self.layout().contentsMargins()
-        bar = self._scroll.verticalScrollBar().sizeHint().width()
-        return margins.left() + margins.right() + bar + 8
+        bar = self._scrolls[self.PAGES[0]].verticalScrollBar().sizeHint().width()
+        return (margins.left() + margins.right() + self.page_list.minimumWidth()
+                + self.layout().spacing() + bar + 8)
 
     def _chrome_height(self) -> int:
         """Window margins plus the button row below the scrolling area."""
@@ -335,7 +390,13 @@ class SettingsDialog(QDialog):
         self.on_change()
 
     def _on_work_hours_toggled(self, enabled: bool):
-        self.db.set_setting(WORK_HOURS_SETTING, "1" if enabled else "0")
+        # The window's own setter when there is one (the same function View →
+        # Highlight Work Hours uses — one command, two routes), else just the
+        # stored preference.
+        if self._set_work_hours is not None:
+            self._set_work_hours(enabled)
+        else:
+            self.db.set_setting(WORK_HOURS_SETTING, "1" if enabled else "0")
         self.on_change()
 
     # ------------------------------------------------------ application font

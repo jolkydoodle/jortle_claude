@@ -75,7 +75,11 @@ print("\n--- [29] no 'Show This Day's Week' ---")
 texts = [a.text().replace("&", "") for a in win.menuBar().actions()]
 all_actions = [a.text() for m in win.menuBar().findChildren(type(win.menuBar().actions()[0]))
                for a in [m]]
-check(f"no View menu holding it {texts}", "View" not in texts)
+# Since batch 4A the View menu exists (Master Spec §51.2); what [29] checks
+# is that it holds no "Show This Day's Week".
+view_menu = next((a.menu() for a in win.menuBar().actions() if a.text().replace("&", "") == "View"), None)
+check(f"the View menu does not hold it {texts}",
+      view_menu is not None and not any("Show This Day" in a.text() for a in view_menu.actions()))
 check("no action anywhere with that name",
       not any("Show This Day" in t for t in all_actions + texts))
 

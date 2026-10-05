@@ -65,16 +65,25 @@ check("core Settings still has the ordinary controls",
            "scheme_combo", "swatch_buttons"]))
 
 print("\n--- Part 36: the dialog fits, wraps and stays usable ---")
+# Since batch 4A the window has pages (G4-D3), each in its own scroll area.
 for name, dlg in (("Settings", core),):
     scrolls = dlg.findChildren(QScrollArea)
-    check(f"{name}: content is inside a scroll area", len(scrolls) == 1)
-    check(f"{name}: no horizontal scrollbar is needed at the size it opens at",
-          not scrolls[0].horizontalScrollBar().isVisible())
-    check(f"{name}: scroll area resizes its content to the window width",
-          scrolls[0].widgetResizable())
+    check(f"{name}: each of its {len(dlg.PAGES)} pages is inside a scroll area",
+          len(scrolls) == len(dlg.PAGES)
+          and all(any(s.widget() is dlg._contents[p] for s in scrolls) for p in dlg.PAGES))
+    dlg.show()
+    for page in dlg.PAGES:
+        dlg.show_page(page)
+        app.processEvents()
+        visible = next(s for s in scrolls if s.widget() is dlg._contents[page])
+        check(f"{name} / {page}: no horizontal scrollbar is needed at the size it opens at",
+              not visible.horizontalScrollBar().isVisible())
+    dlg.hide()
+    check(f"{name}: every scroll area resizes its content to the window width",
+          all(s.widgetResizable() for s in scrolls))
     box = dlg.findChild(QDialogButtonBox)
-    check(f"{name}: the Close button is NOT inside the scroll area",
-          box is not None and not scrolls[0].isAncestorOf(box))
+    check(f"{name}: the Close button is NOT inside any scroll area",
+          box is not None and not any(s.isAncestorOf(box) for s in scrolls))
     # A 1366x768 laptop, minus window chrome, is the bar to clear.
     check(f"{name}: minimum height {dlg.minimumHeight()} fits a small laptop screen",
           dlg.minimumHeight() <= 700)
@@ -91,10 +100,14 @@ for name, dlg in (("Settings", big_core),):
     dlg.resize(*dlg._starting_size())
     dlg.show()
     app.processEvents()
-    scroll = dlg.findChildren(QScrollArea)[0]
-    inner = scroll.widget()
-    check(f"{name} @24pt: content width tracks the window, no horizontal overflow",
-          inner.width() <= scroll.viewport().width() + 1)
+    for page in dlg.PAGES:
+        dlg.show_page(page)
+        app.processEvents()
+        scroll = next(s for s in dlg.findChildren(QScrollArea) if s.widget() is dlg._contents[page])
+        inner = scroll.widget()
+        check(f"{name} / {page} @24pt: content width tracks the window, no horizontal overflow",
+              inner.width() <= scroll.viewport().width() + 1)
+    scroll = next(s for s in dlg.findChildren(QScrollArea) if s.isVisible())
     box = dlg.findChild(QDialogButtonBox)
     check(f"{name} @24pt: Close button still visible inside the window",
           box.y() + box.height() <= dlg.height())
@@ -110,12 +123,16 @@ print("\n--- the File menu ---")
 from app.main_window import MainWindow  # noqa: E402
 
 w = MainWindow()
-file_menu = w.menuBar().actions()[0].menu()
-labels = [a.text() for a in file_menu.actions()]
-check(f"File menu has Settings ({[l for l in labels if 'Settings' in l]})",
-      "Settings…" in labels)
+# Since batch 4A Settings is a top-level menu with one entry per page
+# (Master Spec §51.2, G4-D3).
+settings_menu = next((a.menu() for a in w.menuBar().actions()
+                      if a.text().replace("&", "") == "Settings"), None)
+labels = [a.text().replace("&", "") for a in settings_menu.actions()] if settings_menu else []
+check(f"a top-level Settings menu with the six entries ({labels})",
+      labels == ["General…", "Editor…", "Hotkeys…", "Calendar…", "Appearance…", "Backups…"])
+all_labels = [a.text() for m in w.menuBar().actions() if m.menu() for a in m.menu().actions()]
 check("and no Experimental Settings, which existed only for the AI feature",
-      "Experimental Settings…" not in labels)
+      "Experimental Settings…" not in all_labels)
 check("no menu item anywhere mentions AI",
       not [a.text() for m in w.menuBar().actions() if m.menu()
            for a in m.menu().actions() if "AI" in a.text()])

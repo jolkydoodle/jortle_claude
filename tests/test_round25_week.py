@@ -264,9 +264,10 @@ print("\n--- Part 32 / G3-5: the week follows the selected date; browsing does n
 win.selected_date.set("2026-11-03")
 check("changing the selected date shows its Sunday–Saturday week",
       wc.visible_week.start == "2026-11-01" and wc.visible_week.contains("2026-11-03"))
-check("View → Show This Day's Week is gone (Master Spec §34)",
+check("View → Show This Day's Week is gone (Master Spec §34): no such action in any menu",
       not hasattr(win, "_show_selected_week")
-      and not any(a.text().replace("&", "") == "View" for a in win.menuBar().actions()))
+      and not any("Show This Day" in a.text() for m in win.menuBar().actions() if m.menu()
+                  for a in m.menu().actions()))
 day_before = win.selected_date.value
 wc.shift_days(3)
 check("sliding the week leaves the journal's day alone",

@@ -95,7 +95,12 @@ menu_labels = [a.text() for m in win.menuBar().actions() if m.menu()
                for a in m.menu().actions()]
 check(f"no Experimental Settings entry ({[m for m in menu_labels if 'Setting' in m]})",
       "Experimental Settings…" not in menu_labels)
-check("Settings itself is still there", "Settings…" in menu_labels)
+# Since batch 4A Settings is a top-level menu with one entry per page.
+settings_menu = next((m.menu() for m in win.menuBar().actions()
+                      if m.text().replace("&", "") == "Settings"), None)
+check("Settings itself is still there: a top-level Settings menu with the six entries",
+      settings_menu is not None
+      and [a.text().replace("&", "") for a in settings_menu.actions()] == ["General…", "Editor…", "Hotkeys…", "Calendar…", "Appearance…", "Backups…"])
 check("no menu item mentions AI or a model",
       not [m for m in menu_labels if "AI" in m or "Model" in m])
 

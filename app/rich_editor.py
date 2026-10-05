@@ -62,7 +62,7 @@ from PySide6.QtWidgets import (
     QTextEdit, QToolBar, QToolButton, QVBoxLayout, QWidget
 )
 
-from . import date_links
+from . import commands, date_links
 from .paths import get_attachments_dir
 from .saving import document_has_content
 from .ui_util import font_scaled, make_shrinkable_combo
@@ -966,14 +966,19 @@ class RichEditor(QWidget):
                 layout.addWidget(self.paragraph_toolbar)
 
         # Find works even in a read-only preview (it never edits text), so
-        # it's built unconditionally — only the toolbar's own 🔍 button is
-        # gated on read_only above; the Ctrl+F shortcut always works.
+        # the bar is built unconditionally. In the main window, Find is the
+        # window's one Edit → Find command (Ctrl+F), which opens the bar of
+        # the editor in use (4A-D5). A read-only preview lives in a dialog
+        # with no menu bar, so it keeps its own Ctrl+F, calling the same
+        # show_find_bar.
         self.find_bar = self._build_find_bar()
         layout.addWidget(self.find_bar)
         layout.addWidget(self.text_edit)
 
-        find_shortcut = QShortcut(QKeySequence.Find, self.text_edit, activated=self.show_find_bar)
-        find_shortcut.setContext(Qt.WidgetWithChildrenShortcut)
+        if read_only:
+            for keys in commands.key_sequences("find"):
+                find_shortcut = QShortcut(keys, self.text_edit, activated=self.show_find_bar)
+                find_shortcut.setContext(Qt.WidgetWithChildrenShortcut)
 
         self.text_edit.textChanged.connect(self.textChanged.emit)
         self.text_edit.cursorPositionChanged.connect(self._sync_toolbar_state)
@@ -1058,16 +1063,17 @@ class RichEditor(QWidget):
 
         bar.addSeparator()
 
-        self.bold_btn = self._tool_action(bar, "B", "Bold (Ctrl+B)", self._toggle_bold, checkable=True)
-        self.italic_btn = self._tool_action(bar, "I", "Italic (Ctrl+I)", self._toggle_italic, checkable=True)
-        self.underline_btn = self._tool_action(bar, "U", "Underline (Ctrl+U)", self._toggle_underline, checkable=True)
+        self.bold_btn = self._command_action(bar, "bold", "B", self._toggle_bold, checkable=True)
+        self.italic_btn = self._command_action(bar, "italic", "I", self._toggle_italic, checkable=True)
+        self.underline_btn = self._command_action(bar, "underline", "U", self._toggle_underline,
+                                                  checkable=True)
         self.strike_btn = self._tool_action(bar, "S̶", "Strikethrough", self._toggle_strikethrough, checkable=True)
         self.super_btn = self._tool_action(bar, "x²", "Superscript", self._toggle_superscript, checkable=True)
         self.sub_btn = self._tool_action(bar, "x₂", "Subscript", self._toggle_subscript, checkable=True)
 
         if self.compact:
             # Reader's Notes stops here: bold/italic/underline/strike/super/
-            # sub, lists, and find — enough to write a readable definition
+            # sub and lists — enough to write a readable definition
             # list, without a second copy of the journal's paragraph
             # machinery. Everything omitted still ROUND-TRIPS correctly if it
             # arrives by paste or from another editor; it just isn't offered
@@ -1075,8 +1081,6 @@ class RichEditor(QWidget):
             bar.addSeparator()
             self._tool_action(bar, "•", "Bulleted list", self._toggle_bullet_list)
             self._tool_action(bar, "1.", "Numbered list", self._toggle_numbered_list)
-            bar.addSeparator()
-            self._tool_action(bar, "🔍", "Find in this text (Ctrl+F)", self.show_find_bar)
             return bar
 
         bar.addSeparator()
@@ -1087,8 +1091,9 @@ class RichEditor(QWidget):
         self._tool_action(bar, "✧", "Clear formatting (keep the text, drop its styling)",
                            self._clear_formatting)
 
+        # No Find button: Find is Edit → Find (Ctrl+F) and needs no
+        # permanent toolbar space (Master Spec §51.2, 4A-D5).
         bar.addSeparator()
-        self._tool_action(bar, "🔍", "Find in this entry (Ctrl+F)", self.show_find_bar)
         self._build_zoom_controls(bar)
         return bar
 
@@ -1103,14 +1108,14 @@ class RichEditor(QWidget):
         # quote) — applied via _each_selected_block() to every paragraph
         # the selection touches, the same pattern indent/outdent already
         # established.
-        self.align_left_btn = self._tool_action(bar, "⟸", "Align Left (Ctrl+Shift+L)",
-                                                  lambda: self._set_alignment(Qt.AlignLeft), checkable=True)
-        self.align_center_btn = self._tool_action(bar, "⟺", "Align Center (Ctrl+Shift+E)",
-                                                    lambda: self._set_alignment(Qt.AlignHCenter), checkable=True)
-        self.align_right_btn = self._tool_action(bar, "⟹", "Align Right (Ctrl+Shift+R)",
-                                                   lambda: self._set_alignment(Qt.AlignRight), checkable=True)
-        self.align_justify_btn = self._tool_action(bar, "☰", "Justify (Ctrl+Shift+J)",
-                                                     lambda: self._set_alignment(Qt.AlignJustify), checkable=True)
+        self.align_left_btn = self._command_action(bar, "align_left", "⟸",
+                                                   lambda: self._set_alignment(Qt.AlignLeft), checkable=True)
+        self.align_center_btn = self._command_action(bar, "align_center", "⟺",
+                                                     lambda: self._set_alignment(Qt.AlignHCenter), checkable=True)
+        self.align_right_btn = self._command_action(bar, "align_right", "⟹",
+                                                    lambda: self._set_alignment(Qt.AlignRight), checkable=True)
+        self.align_justify_btn = self._command_action(bar, "align_justify", "☰",
+                                                      lambda: self._set_alignment(Qt.AlignJustify), checkable=True)
         self._alignment_group = QActionGroup(self)
         self._alignment_group.setExclusive(True)
         for btn in (self.align_left_btn, self.align_center_btn, self.align_right_btn, self.align_justify_btn):
@@ -1147,16 +1152,9 @@ class RichEditor(QWidget):
         self._tool_action(bar, "🔗", "Insert Link (select text first, optional)", self.text_edit.insert_link)
         self._tool_action(bar, "🖼", "Insert Photo", self.text_edit.insert_photo)
 
-        QShortcut(QKeySequence.Bold, self.text_edit, activated=self._toggle_bold)
-        QShortcut(QKeySequence.Italic, self.text_edit, activated=self._toggle_italic)
-        QShortcut(QKeySequence.Underline, self.text_edit, activated=self._toggle_underline)
-        QShortcut(QKeySequence.ZoomIn, self.text_edit, activated=self._zoom_in)
-        QShortcut(QKeySequence.ZoomOut, self.text_edit, activated=self._zoom_out)
-        QShortcut(QKeySequence("Ctrl+0"), self.text_edit, activated=self._zoom_reset)
-        QShortcut(QKeySequence("Ctrl+Shift+L"), self.text_edit, activated=lambda: self._set_alignment(Qt.AlignLeft))
-        QShortcut(QKeySequence("Ctrl+Shift+E"), self.text_edit, activated=lambda: self._set_alignment(Qt.AlignHCenter))
-        QShortcut(QKeySequence("Ctrl+Shift+R"), self.text_edit, activated=lambda: self._set_alignment(Qt.AlignRight))
-        QShortcut(QKeySequence("Ctrl+Shift+J"), self.text_edit, activated=lambda: self._set_alignment(Qt.AlignJustify))
+        # The shortcuts are carried by the toolbar actions themselves
+        # (_command_action); the zoom keys belong to the window's View
+        # commands, which act on the editor in use (4A-D3, 4A-D6).
         return bar
 
     def _tool_action(self, bar: QToolBar, label, tooltip, handler, checkable=False, menu=None) -> QAction:
@@ -1173,6 +1171,20 @@ class RichEditor(QWidget):
             if isinstance(tb, QToolButton):
                 tb.setMenu(menu)
                 tb.setPopupMode(QToolButton.MenuButtonPopup)
+        return action
+
+    def _command_action(self, bar: QToolBar, command_id: str, label, handler,
+                        checkable=False) -> QAction:
+        """A toolbar button that is also its command's shortcut — one QAction
+        for both routes (Master Spec §51.3, 4A-D3). Its tooltip and key come
+        from the command table (app/commands.py). The action is added to this
+        editor as well as to the toolbar, so the key works wherever the focus
+        is inside this editor (and only there: two editors on screen at once,
+        such as the journal and its Reader's Notes, never compete for it)."""
+        action = self._tool_action(bar, label, commands.tooltip(command_id), handler, checkable)
+        action.setShortcuts(commands.key_sequences(command_id))
+        action.setShortcutContext(Qt.WidgetWithChildrenShortcut)
+        self.addAction(action)
         return action
 
     SPACING_MAX_PT = 72.0
@@ -1213,7 +1225,9 @@ class RichEditor(QWidget):
         emits zoomChanged, this box reflects it, and typing into this box
         drives the editor. Signals are blocked on the programmatic path so
         the two cannot ping-pong."""
-        self._tool_action(bar, "−", "Zoom out (Ctrl+-)", self._zoom_out)
+        # These buttons zoom this editor through the same functions as the
+        # View menu's Zoom commands; their tooltips show those commands' keys.
+        self._tool_action(bar, "−", commands.tooltip("zoom_out"), self._zoom_out)
 
         self.zoom_spin = QSpinBox()
         self.zoom_spin.setRange(100 + ZOOM_STEP_MIN * ZOOM_PERCENT_PER_STEP,
@@ -1231,8 +1245,8 @@ class RichEditor(QWidget):
         self.zoom_spin.valueChanged.connect(self._on_zoom_spin_changed)
         bar.addWidget(self.zoom_spin)
 
-        self._tool_action(bar, "+", "Zoom in (Ctrl++)", self._zoom_in)
-        self._tool_action(bar, "⟲", "Reset zoom to 100% (Ctrl+0)", self._zoom_reset)
+        self._tool_action(bar, "+", commands.tooltip("zoom_in"), self._zoom_in)
+        self._tool_action(bar, "⟲", commands.tooltip("zoom_reset"), self._zoom_reset)
 
     def _on_zoom_spin_changed(self, percent: int):
         steps = round((percent - 100) / ZOOM_PERCENT_PER_STEP)
@@ -1378,8 +1392,8 @@ class RichEditor(QWidget):
     # -------------------------------------------------------------- zoom
     # Zoom is owned by the editor (see RichTextEditor.set_zoom_steps). These
     # just ask it to change; the displayed percentage updates from its
-    # zoomChanged signal, so Ctrl+wheel, the buttons, the shortcuts and the
-    # percentage box can never disagree about the current level.
+    # zoomChanged signal, so Ctrl+wheel, the buttons, the View menu (and its
+    # keys) and the percentage box can never disagree about the current level.
     def _zoom_in(self):
         self.text_edit.zoom_in()
 

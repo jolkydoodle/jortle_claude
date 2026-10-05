@@ -37,6 +37,7 @@ from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox, QPushButto
 app = QApplication.instance() or QApplication([])
 
 import stress_document as sd  # noqa: E402
+from app import commands  # noqa: E402
 from app import backup as backup_module  # noqa: E402
 from app import backup_dialog  # noqa: E402
 from app import main_window as mw  # noqa: E402
@@ -82,6 +83,16 @@ def settle(ms=0):
     if ms:
         QTest.qWait(ms)
     app.processEvents()
+
+
+def press(widget, command_id):
+    """A command's shortcut as key events: its main binding on this platform,
+    from the command table (as in test_group4_commands), so e.g. Redo is
+    Ctrl+Y on Windows and Ctrl+Shift+Z on Linux."""
+    widget.setFocus()
+    settle()
+    QTest.keySequence(widget, commands.key_sequences(command_id)[0])
+    settle()
 
 
 # ------------------------------------------------------------ dialog answers
@@ -976,8 +987,7 @@ QTest.keyClick(edit, Qt.Key_Z, Qt.ControlModifier)
 settle()
 check("[C1a-4] ...and after Ctrl+S one Ctrl+Z undoes the last typing (not a linking step)",
       edit.toPlainText() != typed, repr(edit.toPlainText()))
-QTest.keyClick(edit, Qt.Key_Y, Qt.ControlModifier)
-settle()
+press(edit, "redo")                             # the platform's Redo key (4A/AM-10)
 win.editor.mark_clean()                         # back to the stored text; nothing left to save
 
 # C1a-5: a new, empty entry and a new project start in the current writing font.

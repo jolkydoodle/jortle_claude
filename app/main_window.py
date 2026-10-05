@@ -6,15 +6,15 @@ import webbrowser
 from pathlib import Path
 
 from PySide6.QtCore import QDate, QObject, Qt, QTimer
-from PySide6.QtGui import QAction, QKeySequence, QShortcut
+from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
-    QApplication, QDialog, QFileDialog, QHBoxLayout, QLabel, QMainWindow, QMessageBox,
-    QProgressDialog, QPushButton, QSplitter, QStatusBar, QTabWidget,
-    QToolButton, QVBoxLayout, QWidget
+    QApplication, QDialog, QFileDialog, QHBoxLayout, QLabel, QLineEdit, QMainWindow,
+    QMessageBox, QPlainTextEdit, QProgressDialog, QPushButton, QSplitter, QStatusBar,
+    QTabWidget, QTextEdit, QToolButton, QVBoxLayout, QWidget
 )
 
 from .archive import export_archive, default_archive_dirname
-from . import backup, backup_dialog, security
+from . import __version__, backup, backup_dialog, commands, security
 from .backup import default_backup_filename, restore_backup
 from .backup_dialog import (
     UNENCRYPTED_COPIES_WARNING, BackupsSecurityDialog, NewPassphraseDialog,
@@ -35,6 +35,7 @@ from .day_calendar import DayCalendarWidget
 from .entry_history import (
     REASON_CLOSED, REASON_LEFT, EntryHistory, stored_state
 )
+from .help_dialogs import KeyboardShortcutsDialog, RecoveryGuideDialog
 from .history_dialogs import EntryHistoryDialog, RecoveryDialog
 from .paths import DISPLAY_NAME, dir_size_bytes, get_data_dir, human_size
 from .projects_widget import ProjectsWidget
@@ -144,8 +145,6 @@ class MainWindow(QMainWindow):
         self._refresh_calendar_marks()
         self._load_date(self.selected_date.value)
 
-        QShortcut(QKeySequence("Ctrl+S"), self, activated=self._save_active_workspace)
-
         # Backups and the unencrypted copy (when kept). The hourly backup
         # check is started by start_background_tasks(), called by the entry
         # point once the window is up — not here, so a window built by a test
@@ -204,12 +203,9 @@ class MainWindow(QMainWindow):
         self.editor.textChanged.connect(self._schedule_autosave)
         self.editor.dateLinkActivated.connect(self._on_date_link_activated)
 
-        # Version history of the entry on screen. An action rather than a bare
-        # button, so a later menu entry can share it (one command, many routes).
-        self.history_action = QAction("History…", self)
-        self.history_action.setToolTip(
-            "Previous versions of this day's entry — preview, restore, or delete them")
-        self.history_action.triggered.connect(self._open_entry_history)
+        # Version history of the entry on screen. One action for the header
+        # button and File → History… (one command, two routes; D3).
+        self.history_action = self._command_action("history", self._open_entry_history)
         history_button = QToolButton()
         history_button.setDefaultAction(self.history_action)
         history_button.setToolButtonStyle(Qt.ToolButtonTextOnly)
@@ -303,68 +299,208 @@ class MainWindow(QMainWindow):
         self.setStatusBar(QStatusBar())
         self._build_save_state_widgets()
 
-    def _build_menu(self):
-        file_menu = self.menuBar().addMenu("&File")
+    # ------------------------------------------------------------ commands
+    def _command_action(self, command_id: str, handler, checkable: bool = False) -> QAction:
+        """The window's one QAction for a command (Master Spec §51.3, 4A-D2):
+        its menu entry, its shortcut and any button all use this action. Its
+        label, tooltip and key come from the command table (app/commands.py).
+        """
+        if not hasattr(self, "command_actions"):
+            self.command_actions: dict[str, QAction] = {}
+        spec = commands.command(command_id)
+        action = QAction(spec.label, self)
+        action.setToolTip(commands.tooltip(command_id))
+        action.setShortcuts(commands.key_sequences(command_id))
+        action.setCheckable(checkable)
+        if checkable:
+            action.toggled.connect(handler)
+        else:
+            action.triggered.connect(lambda _checked=False: handler())
+        # Added to the window itself too, so its shortcut is active anywhere
+        # in the window, menu open or not.
+        self.addAction(action)
+        self.command_actions[command_id] = action
+        return action
 
+    def _build_menu(self):
+        """File | Edit | View | Settings | Help (Master Spec §51.2, batch 4A)."""
+        act = self._command_action
+        bar = self.menuBar()
+
+        # ---- File: commands on the user's data and the application.
+        file_menu = bar.addMenu("&File")
+        file_menu.addAction(act("save", self._save_active_workspace))
+        file_menu.addSeparator()
+        file_menu.addAction(self.history_action)
+        self.recovery_action = act("recovery", self._open_recovery)
+        file_menu.addAction(self.recovery_action)
+        file_menu.addSeparator()
         # Back Up Now, Export Backup…, automatic backups and the Backups &
         # Security window all make a backup through _run_backup →
         # backup.create_backup: one command, several routes.
-        self.back_up_now_action = file_menu.addAction("Back Up Now")
-        self.back_up_now_action.setToolTip("Makes a backup in the backup folder and checks it")
-        self.back_up_now_action.triggered.connect(self._back_up_now)
-
-        export_action = file_menu.addAction("Export Backup…")
-        export_action.setToolTip("Makes a backup in a place you choose")
-        export_action.triggered.connect(self._export_backup)
-
-        import_action = file_menu.addAction("Restore from Backup…")
-        import_action.triggered.connect(self._import_backup)
-
-        self.backups_security_action = file_menu.addAction("Backups && Security…")
-        self.backups_security_action.triggered.connect(self._open_backups_security)
-
-        self.recovery_action = file_menu.addAction("Recovery…")
-        self.recovery_action.setToolTip(
-            "Text kept just before a large deletion in an entry or project")
-        self.recovery_action.triggered.connect(self._open_recovery)
-
-        archive_action = file_menu.addAction("Export Readable Archive (HTML)…")
-        archive_action.setToolTip(
-            "Writes a static website of your journal, Reader's Notes and calendar "
-            "that opens in any browser without this application."
-        )
-        archive_action.triggered.connect(self._export_archive)
-
+        self.back_up_now_action = act("back_up_now", self._back_up_now)
+        file_menu.addAction(self.back_up_now_action)
+        file_menu.addAction(act("export_backup", self._export_backup))
+        file_menu.addAction(act("restore_backup", self._import_backup))
+        self.backups_security_action = act("backups_security", self._open_backups_security)
+        file_menu.addAction(self.backups_security_action)
         file_menu.addSeparator()
-
-        open_folder_action = file_menu.addAction("Open Data Folder")
-        open_folder_action.triggered.connect(self._open_data_folder)
-
-        usage_action = file_menu.addAction("Data Usage…")
-        usage_action.triggered.connect(self._show_data_usage)
-
-        cleanup_action = file_menu.addAction("Find Unused Photos…")
-        cleanup_action.triggered.connect(self._find_unused_photos)
-
+        file_menu.addAction(act("export_archive", self._export_archive))
         file_menu.addSeparator()
-
-        settings_action = file_menu.addAction("Settings…")
-        settings_action.triggered.connect(self._open_settings)
-
+        file_menu.addAction(act("open_data_folder", self._open_data_folder))
+        file_menu.addAction(act("data_usage", self._show_data_usage))
+        file_menu.addAction(act("find_unused_photos", self._find_unused_photos))
         # There is no "Experimental Settings" entry. It existed to hold the
         # AI feature's controls and nothing else, so with that feature gone
         # the menu item would open an empty window — worse than no item.
         file_menu.addSeparator()
-        quit_action = file_menu.addAction("Quit")
-        quit_action.triggered.connect(self.close)
+        file_menu.addAction(act("quit", self.close))
 
-        # There is no View → "Show This Day's Week" any more (Master Spec
-        # §§29, 34): the Weekly Schedule already shows the selected date's
-        # week, so the command had nothing left to do. The View menu held
-        # only that command, so it is gone until the menu group gives it
-        # real contents.
+        # ---- Edit: the focused text (4A-D4) and Find (4A-D5).
+        edit_menu = bar.addMenu("&Edit")
+        for command_id, slot in (("undo", "undo"), ("redo", "redo"), (None, None),
+                                 ("cut", "cut"), ("copy", "copy"), ("paste", "paste"),
+                                 (None, None), ("select_all", "selectAll")):
+            if command_id is None:
+                edit_menu.addSeparator()
+            else:
+                edit_menu.addAction(act(command_id, lambda s=slot: self._edit_focused_text(s)))
+        edit_menu.addSeparator()
+        edit_menu.addAction(act("find", self._find))
+        edit_menu.aboutToShow.connect(self._refresh_command_states)
+
+        # ---- View: presentation only; nothing here changes stored content.
+        # There is no View → "Show This Day's Week" (Master Spec §§29, 34):
+        # the Weekly Schedule already shows the selected date's week.
+        view_menu = bar.addMenu("&View")
+        view_menu.addAction(act("zoom_in", lambda: self._zoom_editor("zoom_in")))
+        view_menu.addAction(act("zoom_out", lambda: self._zoom_editor("zoom_out")))
+        view_menu.addAction(act("zoom_reset", lambda: self._zoom_editor("reset_zoom")))
+        view_menu.addSeparator()
+        # The same CalendarPrefs functions Ctrl+wheel on a timeline uses.
+        view_menu.addAction(act("calendar_zoom_in", lambda: self.calendar_prefs.zoom_by(1)))
+        view_menu.addAction(act("calendar_zoom_out", lambda: self.calendar_prefs.zoom_by(-1)))
+        view_menu.addAction(act("calendar_zoom_reset", self.calendar_prefs.reset_zoom))
+        work_hours = act("work_hours", self.calendar_prefs.set_work_hours_enabled, checkable=True)
+        view_menu.addAction(work_hours)
+        self.calendar_prefs.changed.connect(self._sync_work_hours_action)
+        self._sync_work_hours_action()
+        view_menu.aboutToShow.connect(self._refresh_command_states)
+
+        # ---- Settings: one window, opened at the page asked for (G4-D3).
+        settings_menu = bar.addMenu("&Settings")
+        for page in SettingsDialog.PAGES:
+            settings_menu.addAction(act(f"settings_{page}", lambda p=page: self._open_settings(p)))
+
+        # ---- Help (G4-D4).
+        help_menu = bar.addMenu("&Help")
+        help_menu.addAction(act("keyboard_shortcuts", self._show_keyboard_shortcuts))
+        help_menu.addAction(act("recovery_guide", self._show_recovery_guide))
+        help_menu.addSeparator()
+        help_menu.addAction(act("about", self._show_about))
+
+        # A method, not a lambda: Qt disconnects it when this window is
+        # destroyed, while the application (and its signal) lives on.
+        QApplication.instance().focusChanged.connect(self._on_focus_changed)
+        self._refresh_command_states()
+
+    def _on_focus_changed(self, _old, _new):
+        self._refresh_command_states()
+
+    # The four writing editors, the targets of Find and the zoom commands.
+    def _writing_editors(self) -> tuple:
+        return (self.editor, self.reader_notes.editor,
+                self.projects_widget.editor, self.projects_widget.reader_notes.editor)
+
+    def _command_editor(self):
+        """The editor Find and the zoom commands act on (4A-D5, 4A-D6): the
+        one holding the focus (its find box included), otherwise the editor
+        of the workspace in front — the journal entry on Daily Jorts, the
+        project on Projects — and none on the Weekly or Yearly Calendar."""
+        focus = QApplication.focusWidget()
+        if focus is not None:
+            for editor in self._writing_editors():
+                if (focus is editor or editor.isAncestorOf(focus)) and editor.isVisible():
+                    return editor
+        current = self.main_tabs.currentWidget()
+        if current is self.daily_splitter:
+            return self.editor
+        if current is self.projects_widget and self.projects_widget.editor.isEnabled():
+            return self.projects_widget.editor
+        return None
+
+    def _focused_text(self):
+        """The text widget the Edit commands act on: the focused editor or
+        text field in this window, or None (4A-D4)."""
+        focus = QApplication.focusWidget()
+        if (isinstance(focus, (QTextEdit, QPlainTextEdit, QLineEdit))
+                and focus.window() is self):
+            return focus
+        return None
+
+    def _edit_focused_text(self, slot: str):
+        """Edit → Undo/Redo/Cut/Copy/Paste/Select All: the focused widget's
+        own Qt slot — the same function its keys reach (4A-D4)."""
+        target = self._focused_text()
+        if target is not None:
+            getattr(target, slot)()
+
+    def _find(self):
+        editor = self._command_editor()
+        if editor is not None:
+            editor.show_find_bar()
+
+    def _zoom_editor(self, method: str):
+        editor = self._command_editor()
+        if editor is not None:
+            getattr(editor.text_edit, method)()
+
+    def _refresh_command_states(self):
+        """Enabled state of the Edit and View commands that act on the
+        focused text or the editor in use."""
+        if "find" not in getattr(self, "command_actions", {}):
+            return      # the menus are not built yet
+        actions = self.command_actions
+        target = self._focused_text()
+        read_only = target is not None and target.isReadOnly()
+        if isinstance(target, QLineEdit):
+            can_undo, can_redo = target.isUndoAvailable(), target.isRedoAvailable()
+            has_selection = target.hasSelectedText()
+        elif target is not None:
+            doc = target.document()
+            can_undo, can_redo = doc.isUndoAvailable(), doc.isRedoAvailable()
+            has_selection = target.textCursor().hasSelection()
+        else:
+            can_undo = can_redo = has_selection = False
+        actions["undo"].setEnabled(can_undo and not read_only)
+        actions["redo"].setEnabled(can_redo and not read_only)
+        actions["cut"].setEnabled(has_selection and not read_only)
+        actions["copy"].setEnabled(has_selection)
+        actions["paste"].setEnabled(target is not None and not read_only)
+        actions["select_all"].setEnabled(target is not None)
+        has_editor = self._command_editor() is not None
+        for command_id in ("find", "zoom_in", "zoom_out", "zoom_reset"):
+            actions[command_id].setEnabled(has_editor)
+
+    def _sync_work_hours_action(self):
+        action = self.command_actions["work_hours"]
+        blocked = action.blockSignals(True)
+        action.setChecked(self.calendar_prefs.work_hours_enabled)
+        action.blockSignals(blocked)
+
+    # ---------------------------------------------------------------- help
+    def _show_keyboard_shortcuts(self):
+        KeyboardShortcutsDialog(self).exec()
+
+    def _show_recovery_guide(self):
+        RecoveryGuideDialog(self).exec()
+
+    def _show_about(self):
+        QMessageBox.about(self, f"About {DISPLAY_NAME}",
+                          f"{DISPLAY_NAME}\nVersion {__version__}")
 
     def _on_main_tab_changed(self, _index: int):
+        self._refresh_command_states()
         # Switching tabs doesn't unload anything — the journal editor and the
         # project editor both keep their content and their undo history — so
         # this is a flush, not a decision point, and it only happens when the
@@ -1167,14 +1303,17 @@ class MainWindow(QMainWindow):
         font.setPointSize(size)
         app.setFont(font)
 
-    def _open_settings(self):
+    def _open_settings(self, page: str = "general"):
         """Every setting lives here, and each one applies as it changes —
         `on_change` is the single notification point, which is what makes a
         preference like work-hours highlighting visible immediately rather
-        than on the next launch (see _apply_settings)."""
+        than on the next launch (see _apply_settings). Each Settings menu
+        entry opens this one window at its own page (G4-D3)."""
         dlg = SettingsDialog(self.db, on_change=self._apply_settings, parent=self,
                              set_autosave=self.set_autosave,
-                             open_backups=self._open_backups_security)
+                             open_backups=self._open_backups_security,
+                             set_work_hours=self.calendar_prefs.set_work_hours_enabled,
+                             page=page)
         dlg.exec()
 
     # ------------------------------------------------------- backup/export

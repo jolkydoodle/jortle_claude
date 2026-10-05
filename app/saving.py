@@ -14,7 +14,7 @@ persistence implementation solely for Ctrl+S") and it is also what makes the
 dirty flag trustworthy — there is one place that clears it.
 
 Manual saving is the default for a new install (Part 25). Autosave stays a
-single checkbox away in File → Settings, and an install that had autosave
+single checkbox away in Settings → General, and an install that had autosave
 before keeps behaving the same way because the preference is written at
 migration time (see `ensure_autosave_default`).
 """
