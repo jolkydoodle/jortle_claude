@@ -4,6 +4,7 @@
   NewPassphraseDialog    setting up database or backup encryption, or
                          changing either passphrase
   StorageChoiceDialog    the one-time "how should backups be stored?" question
+  PausedBackupsDialog    at launch, at most once a day, while backups are paused
   BackupsSecurityDialog  File → Backups & Security… (and Settings → Manage…)
 
 These windows only collect choices and show state. The work — and every
@@ -25,7 +26,7 @@ from PySide6.QtWidgets import (
 
 from . import backup, security
 from .paths import DISPLAY_NAME, get_data_dir
-from .ui_util import make_shrinkable_combo
+from .ui_util import font_scaled, make_shrinkable_combo
 
 MIN_PASSPHRASE = 8
 
@@ -101,6 +102,20 @@ class _FitsText(QDialog):
     def showEvent(self, event):
         super().showEvent(event)
         self._fit()
+
+    def _open_for_font(self, base_width: int = 480):
+        """Wider at a larger interface font, up to the screen, and as tall as
+        its text needs at that width. At 24 pt a 480 px window wrapped its
+        text taller than a small screen, and Qt's own size hint measures the
+        text at a narrower width than the window opens at, so the spare
+        height showed as gaps between paragraphs (4A-43; bug 45)."""
+        width = font_scaled(base_width)
+        screen = QApplication.primaryScreen()
+        if screen is not None:
+            width = min(width, screen.availableGeometry().width() - 40)
+        width = max(base_width, width)
+        self.setMinimumWidth(width)
+        self.resize(width, self.layout().totalHeightForWidth(width))
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -281,7 +296,62 @@ class StorageChoiceDialog(_FitsText):
         layout.addWidget(_wrap_label(
             "Until you choose, automatic backups wait. You can change your mind later "
             "in File → Backups & Security."))
-        self.setMinimumWidth(480)
+        self._open_for_font()
+
+    def _choose(self, choice: str):
+        self.choice = choice
+        self.accept()
+
+
+UNENCRYPTED_BACKUPS_MEANING = (
+    "New backups will be ordinary .zip files: anyone who can open the backup folder "
+    "can read them. Your journal database's own encryption, if it has any, is not "
+    "changed, and backups already made are not changed. You can switch to encrypted "
+    "backups later in File → Backups & Security.")
+
+
+def last_backup_line(data_dir: Path) -> str:
+    """When the last checked backup was made — never "never" when backups
+    exist outside the backup folder (4A-43/AM-2): an older version kept them
+    inside the data folder, and those are mentioned instead."""
+    st = backup.status(data_dir)
+    if st.last_success:
+        return f"The last checked backup in the backup folder was made on {_when(st.last_success)}."
+    line = "There is no backup in the backup folder yet."
+    legacy = backup.legacy_backup_dirs(data_dir)
+    if legacy:
+        line += (" Older backups, made by an earlier version, are in "
+                 f"{', '.join(str(p) for p in legacy)}.")
+    return line
+
+
+class PausedBackupsDialog(_FitsText):
+    """Shown at launch, at most once a day, while backups are paused
+    (Master Spec §46.2; backup_reminder.py). It only collects the choice:
+    the main window runs the same commands as Backups & Security. Closing
+    it, Escape and Not now choose nothing."""
+
+    PASSPHRASE, UNENCRYPTED, LATER = "passphrase", "unencrypted", "later"
+
+    def __init__(self, data_dir: Path, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Backups are paused")
+        self.choice = self.LATER
+        layout = QVBoxLayout(self)
+        reason = security.backups_paused_reason(data_dir) or ""
+        layout.addWidget(_wrap_label(f"No backups are being made. {reason}"))
+        layout.addWidget(_wrap_label(last_backup_line(data_dir)))
+        layout.addWidget(_wrap_label(f"Use unencrypted backups: {UNENCRYPTED_BACKUPS_MEANING}"))
+        # One button per line: side by side they are cut off at large sizes.
+        self.buttons = {}
+        for label, choice in (("Set a backup passphrase…", self.PASSPHRASE),
+                              ("Use unencrypted backups", self.UNENCRYPTED),
+                              ("Not now", self.LATER)):
+            button = QPushButton(label)
+            button.clicked.connect(lambda _=False, c=choice: self._choose(c))
+            layout.addWidget(button)
+            self.buttons[choice] = button
+        self._open_for_font()
 
     def _choose(self, choice: str):
         self.choice = choice

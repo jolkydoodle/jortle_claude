@@ -14,11 +14,11 @@ from PySide6.QtWidgets import (
 )
 
 from .archive import export_archive, default_archive_dirname
-from . import __version__, backup, backup_dialog, commands, security
+from . import __version__, backup, backup_dialog, backup_reminder, commands, security
 from .backup import default_backup_filename, restore_backup
 from .backup_dialog import (
     UNENCRYPTED_COPIES_WARNING, BackupsSecurityDialog, NewPassphraseDialog,
-    StorageChoiceDialog, ask_passphrase, busy
+    PausedBackupsDialog, StorageChoiceDialog, ask_passphrase, busy
 )
 from .calendar_panel import CalendarPanel
 from .calendar_widget import month_marks
@@ -1421,7 +1421,9 @@ class MainWindow(QMainWindow):
 
     def start_background_tasks(self):
         """Called by the entry point once the window is showing: the one-time
-        storage question, then the automatic-backup check, now and hourly."""
+        storage question or the "backups are paused" message, then the
+        automatic-backup check, now and hourly. (A window built by a test
+        never calls this, so it shows neither.)"""
         self._backup_timer.start()
         QTimer.singleShot(500, self._startup_backup_tasks)
 
@@ -1429,8 +1431,41 @@ class MainWindow(QMainWindow):
         cfg = security.load_config(get_data_dir())
         if cfg.get("storage_choice") is None:
             self._ask_storage_choice()
+        else:
+            # Never in the same launch as the storage question: choosing
+            # "Encrypt backups…" and cancelling the passphrase pauses backups,
+            # and the user has just made that choice (4A-43, answer 3).
+            self._show_paused_backups_message()
         self._automatic_backup_if_due()
         self._update_backup_indicator()
+
+    def _show_paused_backups_message(self):
+        """At launch, at most once a day, while backups are paused (Master
+        Spec §46.2, bug 43). The choices run the same commands as Backups &
+        Security; Not now, Escape and closing change nothing."""
+        data_dir = get_data_dir()
+        today = backup_reminder.today()
+        if not backup_reminder.should_show(data_dir, today):
+            return
+        if QApplication.activeModalWidget() is not None:
+            return      # not stacked on another window; the next launch shows it
+        backup_reminder.record_shown(data_dir, today)
+        dlg = PausedBackupsDialog(data_dir, self)
+        dlg.exec()
+        if dlg.choice == PausedBackupsDialog.PASSPHRASE:
+            # Makes and checks an encrypted backup when it succeeds, so the
+            # automatic check that follows finds nothing due (4A-43/AM-3).
+            self._set_up_backup_encryption(back_up_after=True)
+        elif dlg.choice == PausedBackupsDialog.UNENCRYPTED:
+            self._keep_backups_unencrypted()
+            # With automatic backups on, the check that follows makes one;
+            # with them off, nothing would, so ask.
+            if security.load_config(data_dir).get("automatic_backups", "daily") == "off":
+                answer = QMessageBox.question(
+                    self, "Make a backup now?",
+                    "Backups are no longer paused. Make a backup now?")
+                if answer == QMessageBox.Yes:
+                    self._back_up_now()
 
     def _ask_storage_choice(self):
         """The one-time question. "Encrypted" is recorded as the choice before
