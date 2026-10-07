@@ -51,7 +51,7 @@ from .calendar_prefs import WORK_HOURS_SETTING
 from .saving import AUTOSAVE_SETTING, autosave_enabled
 from .database import Database
 from .help_dialogs import shortcuts_table
-from .ui_util import make_shrinkable_combo
+from .ui_util import FlowLayout, make_shrinkable_combo
 from .theme import PRESETS, ColorScheme, scheme_from_json, scheme_to_json
 
 MIN_WIDTH = 440
@@ -166,19 +166,26 @@ class SettingsDialog(QDialog):
         self.scheme_combo.setCurrentIndex(idx if idx >= 0 else self.scheme_combo.count() - 1)
         self.scheme_combo.currentTextChanged.connect(self._on_preset_chosen)
 
+        # Each colour is one unit, its caption centred under its swatch (bug
+        # 28), and the units flow onto more rows when the page is narrow: one
+        # fixed row of them was the Appearance page's width floor, wider than
+        # a small screen at a large interface font (4A-F1).
         self.swatch_buttons: dict[str, QPushButton] = {}
-        swatch_row = QHBoxLayout()
+        swatch_row = FlowLayout()
         for field, label in SWATCH_FIELDS:
-            col = QVBoxLayout()
+            unit = QWidget()
+            col = QVBoxLayout(unit)
+            col.setContentsMargins(0, 0, 0, 0)
             btn = QPushButton()
             btn.setFixedSize(32, 24)
             btn.clicked.connect(lambda _checked=False, f=field: self._pick_color(f))
             self.swatch_buttons[field] = btn
             small_label = QLabel(label)
             small_label.setObjectName("SubtleHint")
-            col.addWidget(btn)
+            small_label.setAlignment(Qt.AlignHCenter)
+            col.addWidget(btn, 0, Qt.AlignHCenter)
             col.addWidget(small_label)
-            swatch_row.addLayout(col)
+            swatch_row.addWidget(unit)
         self._refresh_swatches()
 
         # The backup folder is visible here (Master Spec §46.1); everything
@@ -217,7 +224,12 @@ class SettingsDialog(QDialog):
             "hotkeys": [(None, self.hotkeys_table)],
             "calendar": [("Calendar:", self.work_hours_check)],
             "appearance": [("Color scheme:", self.scheme_combo),
-                           ("Tweak colors:", swatch_row),
+                           # The swatches on their own full-width row under
+                           # their label (4A-F1/AM-4): beside it, the label
+                           # took width the swatches then wrapped into, and
+                           # the page grew taller as the window grew wider.
+                           ("Tweak colors:", None),
+                           (None, swatch_row),
                            ("Application font size:", self.ui_size_spin)],
             "backups": [("Backups:", backup_row)],
         }
@@ -242,6 +254,8 @@ class SettingsDialog(QDialog):
             for label, field in rows[key]:
                 if label is None:
                     form.addRow(field)
+                elif field is None:
+                    form.addRow(QLabel(label))
                 else:
                     form.addRow(label, field)
             content = QWidget()

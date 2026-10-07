@@ -20,6 +20,7 @@ would otherwise set a floor under the window width.
 """
 from __future__ import annotations
 
+from PySide6.QtCore import QPoint, QRect, QSize, Qt
 from PySide6.QtWidgets import QApplication, QComboBox, QLabel, QLayout, QSizePolicy, QWidget
 
 # The application font size the app's pixel budgets were chosen at. Anything
@@ -186,3 +187,77 @@ class YieldingHintLabel(QLabel):
         super().resizeEvent(event)
         if event.oldSize().width() != event.size().width():
             self.updateGeometry()
+
+
+class FlowLayout(QLayout):
+    """Items left to right, wrapping onto a new row when the width runs out
+    (4A-F1-D1). Its minimum width is that of its widest item, not of a whole
+    row, so a row of items never sets a floor under the window width; and it
+    reports the height a given width needs (heightForWidth), so a form and a
+    scroll area above it make room for the wrapped rows.
+
+    Used for the colour swatches in Settings → Appearance: at a large
+    interface font one row of them was wider than a small screen (4A's CI
+    run on ubuntu)."""
+
+    def __init__(self, parent=None, spacing: int = 8):
+        super().__init__(parent)
+        self._items = []
+        self.setContentsMargins(0, 0, 0, 0)
+        self.setSpacing(spacing)
+
+    def addItem(self, item):
+        self._items.append(item)
+
+    def count(self):
+        return len(self._items)
+
+    def itemAt(self, index):
+        return self._items[index] if 0 <= index < len(self._items) else None
+
+    def takeAt(self, index):
+        return self._items.pop(index) if 0 <= index < len(self._items) else None
+
+    def expandingDirections(self):
+        return Qt.Orientations()
+
+    def hasHeightForWidth(self):
+        return True
+
+    def heightForWidth(self, width: int) -> int:
+        return self._arrange(QRect(0, 0, width, 0), move=False)
+
+    def setGeometry(self, rect):
+        super().setGeometry(rect)
+        self._arrange(rect, move=True)
+
+    def sizeHint(self):
+        # All on one row: what a wide window shows.
+        margins = self.contentsMargins()
+        visible = [i for i in self._items if not i.isEmpty()]
+        width = sum(i.sizeHint().width() for i in visible) + self.spacing() * max(0, len(visible) - 1)
+        height = max((i.sizeHint().height() for i in visible), default=0)
+        return QSize(width + margins.left() + margins.right(), height + margins.top() + margins.bottom())
+
+    def minimumSize(self):
+        size = QSize()
+        for item in self._items:
+            size = size.expandedTo(item.minimumSize())
+        margins = self.contentsMargins()
+        return size + QSize(margins.left() + margins.right(), margins.top() + margins.bottom())
+
+    def _arrange(self, rect, move: bool) -> int:
+        margins = self.contentsMargins()
+        area = rect.adjusted(margins.left(), margins.top(), -margins.right(), -margins.bottom())
+        x, y, row_height = area.x(), area.y(), 0
+        for item in self._items:
+            if item.isEmpty():
+                continue
+            hint = item.sizeHint()
+            if x > area.x() and x + hint.width() > area.right() + 1:
+                x, y, row_height = area.x(), y + row_height + self.spacing(), 0
+            if move:
+                item.setGeometry(QRect(QPoint(x, y), hint))
+            x += hint.width() + self.spacing()
+            row_height = max(row_height, hint.height())
+        return y + row_height - rect.y() + margins.bottom()
