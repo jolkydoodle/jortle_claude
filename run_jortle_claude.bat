@@ -4,8 +4,9 @@ REM  an .exe first. Handy for trying a change immediately — for the real
 REM  installed app (with a Desktop shortcut and no console window), use
 REM  build_windows.bat and then create_desktop_shortcut.bat instead.
 REM
-REM  Needs Python 3.10+ with the packages in requirements.txt:
-REM      python -m pip install -r requirements.txt
+REM  Needs Python 3.10+ with the packages in requirements.txt, at the exact
+REM  versions in constraints.txt:
+REM      python -m pip install -r requirements.txt -c constraints.txt
 
 setlocal
 cd /d "%~dp0"

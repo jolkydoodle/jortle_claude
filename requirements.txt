@@ -4,3 +4,7 @@ pyinstaller>=6.0
 # age for keys and backups. Both ship wheels for Windows, macOS and Linux.
 sqlcipher3>=0.6
 pyrage>=1.4
+# For the tests only: test_group3_data_model reads the exported calendar.ics back.
+python-dateutil>=2.8
+# Exact versions of all of these, and of their own dependencies, are in
+# constraints.txt: install with  -r requirements.txt -c constraints.txt

@@ -23,7 +23,8 @@ REM ============================================================
 
 echo Installing dependencies...
 python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
+REM  The exact versions in constraints.txt, the same as the tests use (FP-16).
+python -m pip install -r requirements.txt -c constraints.txt
 
 echo.
 echo Building jortle_claude with PyInstaller (this can take a minute)...

@@ -12,7 +12,9 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
-        python: ["3.11", "3.13"]
+        # Exact patch versions (FP-16): 3.13.2 is the local .venv's, so local
+        # and CI evidence come from the same Python.
+        python: ["3.11.9", "3.13.2"]
     runs-on: ${{ matrix.os }}
 
     steps:
@@ -33,9 +35,11 @@ jobs:
             libxcb-xfixes0
 
       - name: Install dependencies
-        # python-dateutil is for the tests only: it reads the exported
-        # calendar.ics back (test_group3_data_model, check [13]).
-        run: python -m pip install "PySide6>=6.7" "sqlcipher3>=0.6" "pyrage>=1.4" python-dateutil
+        # One list (requirements.txt) at exact versions (constraints.txt),
+        # the same as the local .venv and the Windows build (FP-1, FP-16).
+        run: |
+          python -m pip install -r requirements.txt -c constraints.txt
+          python -m pip freeze --all
 
       - name: Run the suite
         env:

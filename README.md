@@ -569,9 +569,13 @@ is a design goal:
 ## Running it (development / any OS)
 
 ```bash
-pip install -r requirements.txt
+pip install -r requirements.txt -c constraints.txt
 python jortle_claude.py
 ```
+
+`constraints.txt` pins the exact version of every dependency (the ones
+the tests and the Windows build use), so a newer release of a library
+can't change the app's behaviour without anyone noticing.
 
 This works on Windows, macOS, or Linux as-is.
 
@@ -592,7 +596,8 @@ from Linux or macOS.
    python.exe to PATH" during install).
 3. Double-click **`build_windows.bat`**. It installs the dependencies in
    `requirements.txt` (PySide6, PyInstaller, and `sqlcipher3` and `pyrage`
-   for the optional encryption) and produces
+   for the optional encryption), at the exact versions in
+   `constraints.txt`, and produces
    `dist\jortle_claude\jortle_claude.exe`. It asks you nothing.
 4. Run **`create_desktop_shortcut.bat`** to drop a "jortle_claude"
    shortcut on your Desktop pointing at that .exe. If you still have an old
@@ -788,6 +793,7 @@ jortle_claude/
   diagnose_data.py               read-only report on the data folders (see below)
   recover_entry.py               pull one entry out of a backup (see below)
   requirements.txt
+  constraints.txt                the exact version of every dependency
   build_windows.bat              one-time Windows build script (--onedir)
   create_desktop_shortcut.bat    creates the Desktop shortcut
   installer.iss                  optional Inno Setup installer script
