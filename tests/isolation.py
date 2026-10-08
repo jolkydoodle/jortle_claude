@@ -51,7 +51,9 @@ def use_system_fonts_offscreen() -> None:
     """
     if sys.platform != "win32":
         return
-    if os.environ.get("QT_QPA_PLATFORM", "offscreen") != "offscreen":
+    # "offscreen", or "offscreen:" with options such as a screen configfile
+    # (4A2/AM-9) — the same platform plugin, so the same fonts.
+    if os.environ.get("QT_QPA_PLATFORM", "offscreen").split(":", 1)[0] != "offscreen":
         return
     windir = os.environ.get("WINDIR") or os.environ.get("SystemRoot") or r"C:\Windows"
     os.environ.setdefault("QT_QPA_FONTDIR", os.path.join(windir, "Fonts"))

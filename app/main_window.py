@@ -14,13 +14,14 @@ from PySide6.QtWidgets import (
 )
 
 from .archive import export_archive, default_archive_dirname
-from . import __version__, backup, backup_dialog, backup_reminder, commands, security
+from . import __version__, backup, backup_dialog, backup_reminder, commands, core_features, security
 from .backup import default_backup_filename, restore_backup
 from .backup_dialog import (
     UNENCRYPTED_COPIES_WARNING, BackupsSecurityDialog, NewPassphraseDialog,
     PausedBackupsDialog, StorageChoiceDialog, ask_passphrase, busy
 )
 from .calendar_panel import CalendarPanel
+from .core_features_tip import CoreFeaturesTip
 from .calendar_widget import month_marks
 from .period_titles import PeriodTitles
 from .year_calendar import YearCalendarWidget
@@ -160,6 +161,8 @@ class MainWindow(QMainWindow):
         # Last, so it overrides the default sizing rather than being
         # overwritten by it.
         self._restore_window_state()
+        # After the tab order, so a hidden tab keeps its place (4A2).
+        self._apply_feature_visibility()
 
     # --------------------------------------------------------------- setup
     def _build_ui(self):
@@ -385,6 +388,17 @@ class MainWindow(QMainWindow):
         view_menu.addAction(work_hours)
         self.calendar_prefs.changed.connect(self._sync_work_hours_action)
         self._sync_work_hours_action()
+        # Core Features: one checkable entry per feature in the one list
+        # (core_features.FEATURES, 4A2), each running set_feature_visible.
+        view_menu.addSeparator()
+        self.core_features_menu = view_menu.addMenu("Core &Features")
+        for feature in core_features.FEATURES:
+            action = QAction(feature.label, self)
+            action.setCheckable(True)
+            action.setChecked(True)
+            action.toggled.connect(lambda on, k=feature.key: self.set_feature_visible(k, on))
+            self.core_features_menu.addAction(action)
+            self.command_actions[f"feature_{feature.key}"] = action
         view_menu.aboutToShow.connect(self._refresh_command_states)
 
         # ---- Settings: one window, opened at the page asked for (G4-D3).
@@ -487,6 +501,113 @@ class MainWindow(QMainWindow):
         blocked = action.blockSignals(True)
         action.setChecked(self.calendar_prefs.work_hours_enabled)
         action.blockSignals(blocked)
+
+    # -------------------------------------------------------- core features
+    def _feature(self, key: str):
+        return next(f for f in core_features.FEATURES if f.key == key)
+
+    def _feature_widgets(self, feature) -> list:
+        """The tab page or the panes a feature hides."""
+        widgets = []
+        if feature.tab_key is not None:
+            widgets += [w for w, k in self._tab_keys.items() if k == feature.tab_key]
+        for path in feature.panes:
+            obj = self
+            for part in path.split("."):
+                obj = getattr(obj, part)
+            widgets.append(obj)
+        return widgets
+
+    def feature_visible(self, key: str) -> bool:
+        return core_features.is_visible(self.db, key)
+
+    def _show_feature_widgets(self, feature, visible: bool):
+        for widget in self._feature_widgets(feature):
+            index = self.main_tabs.indexOf(widget)
+            if index >= 0:
+                # Hidden, not removed: the tab keeps its place in the tab bar
+                # and in main_tab_order, and comes back there (4A2, answer 3).
+                self.main_tabs.setTabVisible(index, visible)
+            else:
+                widget.setVisible(visible)
+
+    def _apply_feature_visibility(self):
+        """The stored visibility, at startup: nothing is saved or flushed."""
+        for feature in core_features.FEATURES:
+            visible = self.feature_visible(feature.key)
+            if not visible:
+                if self.main_tabs.currentWidget() in self._feature_widgets(feature):
+                    self._show_daily_tab()
+                self._show_feature_widgets(feature, False)
+            self._sync_feature_action(feature.key, visible)
+
+    def _sync_feature_action(self, key: str, visible: bool):
+        action = self.command_actions.get(f"feature_{key}")
+        if action is not None:
+            blocked = action.blockSignals(True)
+            action.setChecked(visible)
+            action.blockSignals(blocked)
+
+    def set_feature_visible(self, key: str, visible: bool):
+        """THE way a Core Feature is shown or hidden (the View → Core
+        Features entries and the Recovery restore both come here). Hiding
+        changes presentation only; nothing is deleted (§51.2)."""
+        feature = self._feature(key)
+        if not visible:
+            self._before_hiding(feature)
+        self._show_feature_widgets(feature, visible)
+        core_features.set_visible(self.db, key, visible)
+        self._sync_feature_action(key, visible)
+        self._refresh_command_states()
+        self._update_dirty_indicator()
+
+    def _before_hiding(self, feature):
+        """The existing rules for leaving a document (Master Spec §45;
+        4A2/AM-2): a hidden current tab hands over to Daily Jorts through the
+        ordinary tab change; with autosave on, edited documents are saved;
+        with autosave off nothing is written and unsaved work stays in the
+        hidden editor (the window title keeps its "*", and closing still
+        asks). Reader's Notes keep their own rule (deferred item D2): edited
+        notes are saved on any automatic trigger."""
+        widgets = self._feature_widgets(feature)
+        if self.main_tabs.currentWidget() in widgets:
+            self._show_daily_tab()
+        for widget in widgets:
+            notes = ([widget] if isinstance(widget, ReaderNotesWidget)
+                     else widget.findChildren(ReaderNotesWidget))
+            for note in notes:
+                note.flush(automatic=True)
+            if autosave_enabled(self.db) and widget is self.projects_widget:
+                self.projects_widget.flush()
+
+    def _notes_on_screen(self, notes) -> bool:
+        return not notes.isHidden()
+
+    def _show_core_features_tip(self):
+        """The one-time tooltip (Master Spec §51.2). A first launch
+        (core_features.first_launch, 4A2/AM-1) makes it due, in
+        security.json; from then on it shows at every launch until "Cool!"
+        is clicked, whatever the journal holds by then and even after a
+        restore (4A2/AM-6). Never with a modal window open — the next launch
+        then shows it. An existing or migrated installation never becomes
+        due, so never sees it."""
+        data_dir = get_data_dir()
+        cfg = security.load_config(data_dir)
+        if cfg.get(core_features.TIP_ACKNOWLEDGED):
+            return
+        if not cfg.get(core_features.TIP_DUE):
+            if not core_features.first_launch():
+                return
+            security.update_config(data_dir, **{core_features.TIP_DUE: backup_reminder.today()})
+        if QApplication.activeModalWidget() is not None:
+            return
+        view = next(a for a in self.menuBar().actions()
+                    if a.text().replace("&", "") == "View")
+        self._core_features_tip = CoreFeaturesTip(self, core_features.FEATURES)
+        self._core_features_tip.acknowledged.connect(
+            lambda: security.update_config(
+                data_dir, **{core_features.TIP_ACKNOWLEDGED: backup_reminder.today()}))
+        self._core_features_tip.show_under(self.menuBar(), view)
 
     # ---------------------------------------------------------------- help
     def _show_keyboard_shortcuts(self):
@@ -868,15 +989,18 @@ class MainWindow(QMainWindow):
         """
         current = self.main_tabs.currentWidget()
         saved = []
+        # Hidden Reader's Notes are skipped: they cannot be edited while
+        # hidden, and their edits were saved when they were hidden (4A2).
         if current is self.projects_widget:
             if self.projects_widget.save_now():
                 saved.append("project")
-            if self.projects_widget.reader_notes.flush(force=True):
+            if (self._notes_on_screen(self.projects_widget.reader_notes)
+                    and self.projects_widget.reader_notes.flush(force=True)):
                 saved.append("Reader's Notes")
         else:
             self._save_current_entry()
             saved.append("journal entry")
-            if self.reader_notes.flush(force=True):
+            if self._notes_on_screen(self.reader_notes) and self.reader_notes.flush(force=True):
                 saved.append("Reader's Notes")
         self.statusBar().showMessage("Saved " + " and ".join(saved) + ".", 2500)
 
@@ -1438,6 +1562,8 @@ class MainWindow(QMainWindow):
             self._show_paused_backups_message()
         self._automatic_backup_if_due()
         self._update_backup_indicator()
+        # Last: after every startup question has been answered (4A2).
+        self._show_core_features_tip()
 
     def _show_paused_backups_message(self):
         """At launch, at most once a day, while backups are paused (Master
@@ -2097,6 +2223,15 @@ class MainWindow(QMainWindow):
                     "That project no longer exists. Use Copy Text to take the "
                     "recovered writing somewhere else.")
                 return False
+            projects = next(f for f in core_features.FEATURES if f.tab_key == "projects")
+            if not self.feature_visible(projects.key):
+                # Projects is hidden (4A2, answer 5): ask before showing it.
+                answer = QMessageBox.question(
+                    self, "Recovery",
+                    "Projects is hidden. Show Projects again to restore this?")
+                if answer != QMessageBox.Yes:
+                    return False
+                self.set_feature_visible(projects.key, True)
             self.main_tabs.setCurrentWidget(self.projects_widget)
             return self.projects_widget.restore_content(
                 project_id, checkpoint.body, checkpoint.body_format, checkpoint.body_text)

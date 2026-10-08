@@ -221,6 +221,11 @@ DEFAULT_CONFIG = {
     # The date (YYYY-MM-DD) the "backups are paused" message was last shown
     # at launch; it is shown at most once a day (backup_reminder.py).
     "paused_notice_shown_on": None,
+    # The date the Core Features tooltip was acknowledged with "Cool!" (4A2);
+    # here so a restore never brings it back.
+    "core_features_tip_acknowledged": None,
+    # The date a first launch made that tooltip due (4A2/AM-6).
+    "core_features_tip_due": None,
 }
 
 

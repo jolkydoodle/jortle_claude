@@ -13,6 +13,7 @@ still work, so the second half is deliberately longer than the first.
 """
 import os
 import pathlib
+import re
 import sys
 import tempfile
 
@@ -62,13 +63,37 @@ for name in REMOVED:
         pass
 check("and none of them can still be imported: " + ", ".join(importable), not importable)
 
+def is_ai_import(stripped: str) -> bool:
+    """Every removed name is matched as a substring, as before — except
+    "features", matched as a whole module name only: it was an AI module,
+    but core_features (View → Core Features, 4A2/AM-5) is not."""
+    for m in REMOVED:
+        if m == "features":
+            if re.search(r"\bfeatures\b", stripped):
+                return True
+        elif m in stripped:
+            return True
+    return "llama" in stripped
+
+
+# The guard's own teeth (4A2/AM-5): what it must still catch, and what not.
+for sample, expected in (("from .local_llm_backend import load", True),    # substring only
+                         ("import reflection_panel_v2", True),               # substring only
+                         ("import features", True),
+                         ("from .features import FLAGS", True),
+                         ("from . import a, features", True),
+                         ("from . import core_features", False),
+                         ("from .core_features_tip import CoreFeaturesTip", False)):
+    check(f"the guard {'catches' if expected else 'lets through'} {sample!r}",
+          is_ai_import(sample) == expected)
+
 bad_imports = []
 for module in sorted(APP_DIR.glob("*.py")):
     for lineno, line in enumerate(module.read_text(encoding="utf-8").splitlines(), 1):
         stripped = line.strip()
         if not (stripped.startswith("import ") or stripped.startswith("from ")):
             continue
-        if any(m in stripped for m in REMOVED) or "llama" in stripped:
+        if is_ai_import(stripped):
             bad_imports.append(f"{module.name}:{lineno}")
 check("no module imports anything AI: " + "; ".join(bad_imports), not bad_imports)
 

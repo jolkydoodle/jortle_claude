@@ -287,10 +287,26 @@ captured = {}
 def inspect_then_later(w):
     captured["labels"] = [lbl.text() for lbl in w.findChildren(QLabel)]
     captured["buttons"] = [b.text() for b in w.findChildren(QPushButton)]
+    # security.json immediately before the Not now click (4A-43/AM-10):
+    # writes made earlier in the startup are not the click's.
+    captured["cfg_before_click"] = config()
     click("later")(w)
 
 
-before_cfg = {k: v for k, v in config().items() if k != "paused_notice_shown_on"}
+# ...and as the paused-message step returns: after Not now has been
+# handled, before the later startup steps (the automatic-backup check, the
+# Core Features tooltip) write anything of their own.
+_original_show_paused = MainWindow._show_paused_backups_message
+
+
+def _recording_show_paused(self):
+    _original_show_paused(self)
+    captured["cfg_after_message"] = config()
+
+
+MainWindow._show_paused_backups_message = _recording_show_paused
+
+
 before_files = sorted(p.name for p in DATA.iterdir())
 d = launch(win, (PausedBackupsDialog, inspect_then_later))
 text = " ".join(captured.get("labels", []))
@@ -303,9 +319,9 @@ check("it says what 'Use unencrypted backups' means",
 check(f"exactly the three buttons {captured.get('buttons')}",
       captured.get("buttons") == ["Set a backup passphrase…", "Use unencrypted backups", "Not now"])
 print("\n--- [B43-2] Not now changes nothing but the date ---")
-after_cfg = {k: v for k, v in config().items() if k != "paused_notice_shown_on"}
-check("Not now: security.json unchanged except paused_notice_shown_on = today",
-      after_cfg == before_cfg and config()["paused_notice_shown_on"] == "2026-11-01")
+check("Not now: security.json unchanged by the click, and paused_notice_shown_on = today",
+      captured.get("cfg_after_message") == captured.get("cfg_before_click") is not None
+      and captured["cfg_before_click"].get("paused_notice_shown_on") == "2026-11-01")
 check("...no backup file or key was created",
       backups() == [] and sorted(p.name for p in DATA.iterdir()) == before_files
       and not (DATA / security.BACKUP_KEY_FILE).exists())

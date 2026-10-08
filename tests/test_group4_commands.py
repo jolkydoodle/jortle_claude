@@ -218,8 +218,9 @@ expected = {
              "Restore from Backup…", "Backups & Security…", "Export Readable Archive (HTML)…",
              "Open Data Folder", "Data Usage…", "Find Unused Photos…", "Quit"],
     "Edit": ["Undo", "Redo", "Cut", "Copy", "Paste", "Select All", "Find…"],
+    # Since 4A2 (4A2-D5) View ends with the Core Features submenu.
     "View": ["Zoom In", "Zoom Out", "Reset Zoom", "Calendar Zoom In", "Calendar Zoom Out",
-             "Reset Calendar Zoom", "Highlight Work Hours"],
+             "Reset Calendar Zoom", "Highlight Work Hours", "Core Features"],
     "Settings": ["General…", "Editor…", "Hotkeys…", "Calendar…", "Appearance…", "Backups…"],
     "Help": ["Keyboard Shortcuts…", "Recovery Guide…", "About…"],
 }
@@ -227,12 +228,18 @@ for title, wanted in expected.items():
     got = labels_of(menu_of(win, title))
     check(f"{title} holds {wanted}", got == wanted, got)
 everything = [t for m in expected for t in labels_of(menu_of(win, m))]
-check("no View All Reader's Notes, no Core Features, no Settings… in File",
-      not [t for t in everything if "Reader's Notes" in t or "Core Features" in t]
-      and "Settings…" not in labels_of(menu_of(win, "File")))
-check("every entry is one of the window's command actions",
+from app import core_features  # noqa: E402
+core_menu = next(a.menu() for a in menu_of(win, "View").actions() if a.menu())
+check("no View All Reader's Notes, no Settings… in File; Core Features holds exactly the "
+      "features of core_features.FEATURES, in order (4A2-D5)",
+      not [t for t in everything if "View All Reader's Notes" in t]
+      and "Settings…" not in labels_of(menu_of(win, "File"))
+      and labels_of(core_menu) == [f.label for f in core_features.FEATURES]
+      == ["Yearly Calendar", "Projects", "Reader's Notes"], labels_of(core_menu))
+check("every entry is one of the window's command actions (a submenu's entries count as its own)",
       all(a in win.command_actions.values()
-          for m in expected for a in menu_of(win, m).actions() if not a.isSeparator()))
+          for m in [menu_of(win, t) for t in expected] + [core_menu]
+          for a in m.actions() if not a.isSeparator() and not a.menu()))
 
 # ================================================================ C4A-2
 print("\n--- [C4A-2] one command per operation: Save, History, Recovery ---")
@@ -780,6 +787,8 @@ for size in (9, 13, 24):
         for a in menu.actions():
             if a.isSeparator():
                 reference.addSeparator()
+            elif a.menu():
+                reference.addMenu(QMenu(a.text(), reference))   # a submenu entry (4A2)
             else:
                 entry = reference.addAction(a.text())
                 entry.setShortcuts(a.shortcuts())

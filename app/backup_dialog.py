@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog,
     QFormLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton,
@@ -108,9 +109,16 @@ class _FitsText(QDialog):
         its text needs at that width. At 24 pt a 480 px window wrapped its
         text taller than a small screen, and Qt's own size hint measures the
         text at a narrower width than the window opens at, so the spare
-        height showed as gaps between paragraphs (4A-43; bug 45)."""
+        height showed as gaps between paragraphs (4A-43; bug 45). "The
+        screen" is the one the parent window is on — where the dialog opens —
+        not the primary screen (4A2/AM-8)."""
         width = font_scaled(base_width)
-        screen = QApplication.primaryScreen()
+        screen = None
+        parent = self.parentWidget()
+        if parent is not None:
+            window = parent.window()
+            screen = QGuiApplication.screenAt(window.frameGeometry().center()) or window.screen()
+        screen = screen or QApplication.primaryScreen()
         if screen is not None:
             width = min(width, screen.availableGeometry().width() - 40)
         width = max(base_width, width)
