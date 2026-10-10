@@ -41,7 +41,7 @@ from .history_dialogs import EntryHistoryDialog, RecoveryDialog
 from .paths import DISPLAY_NAME, dir_size_bytes, get_data_dir, human_size
 from .projects_widget import ProjectsWidget
 from .reader_notes_widget import ReaderNotesWidget
-from .rich_editor import RichEditor
+from .rich_editor import RichEditor, ZOOM_PERCENT_PER_STEP, ZOOM_STEP_MAX, ZOOM_STEP_MIN
 from .saving import (
     CANCEL, SAVE, ask_unsaved, autosave_enabled, document_has_content,
     ensure_autosave_default, set_autosave_enabled
@@ -55,6 +55,10 @@ from .ui_util import (
 from .week_calendar import WeekCalendarWidget
 
 AUTOSAVE_INTERVAL_MS = 1200
+# Each writing editor remembers its own view zoom (4C2a-D4), in the order of
+# MainWindow._writing_editors(): journal, date notes, project, project notes.
+EDITOR_ZOOM_SETTINGS = ("editor_zoom_journal", "editor_zoom_date_notes",
+                        "editor_zoom_project", "editor_zoom_project_notes")
 # How often an automatic backup is checked for while the app is open, and how
 # soon after a save the unencrypted copy (when one is kept) is brought up to date.
 BACKUP_CHECK_INTERVAL_MS = 60 * 60 * 1000
@@ -142,9 +146,13 @@ class MainWindow(QMainWindow):
         self._autosave_timer.setSingleShot(True)
         self._autosave_timer.timeout.connect(self._autosave_tick)
 
+        self._applying_stored_zoom = False
         self._build_ui()
         self._build_menu()
+        for editor in self._writing_editors():
+            editor.text_edit.zoomChanged.connect(self._remember_editor_zoom)
         self._apply_settings()
+        self._load_editor_zoom()
         self._refresh_calendar_marks()
         self._load_date(self.selected_date.value)
 
@@ -490,6 +498,39 @@ class MainWindow(QMainWindow):
         editor = self._command_editor()
         if editor is not None:
             getattr(editor.text_edit, method)()
+
+    def _load_editor_zoom(self):
+        """Puts each writing editor at its remembered zoom (4C2a-D4): at
+        startup, and after a restore (the restored journal's levels, or 100%
+        where it has none). Applying a stored level writes nothing back."""
+        self._applying_stored_zoom = True
+        try:
+            for editor, key in zip(self._writing_editors(), EDITOR_ZOOM_SETTINGS):
+                editor.text_edit.set_zoom_steps(self._stored_zoom_steps(key))
+        finally:
+            self._applying_stored_zoom = False
+
+    def _stored_zoom_steps(self, key: str) -> int:
+        """The zoom steps a stored percentage means; 0 (100%) for a missing
+        or invalid value (not a whole step, or out of range)."""
+        try:
+            percent = int(self.db.get_setting(key, "100"))
+        except (TypeError, ValueError):
+            return 0
+        steps, rest = divmod(percent - 100, ZOOM_PERCENT_PER_STEP)
+        if rest or not ZOOM_STEP_MIN <= steps <= ZOOM_STEP_MAX:
+            return 0
+        return steps
+
+    def _remember_editor_zoom(self, percent: int):
+        """An editor's zoom changed, by any route: remember it for that
+        editor (4C2a-D4)."""
+        if self._applying_stored_zoom:
+            return
+        for editor, key in zip(self._writing_editors(), EDITOR_ZOOM_SETTINGS):
+            if editor.text_edit is self.sender():
+                self.db.set_setting(key, str(percent))
+                return
 
     def _refresh_command_states(self):
         """Enabled state of the Edit and View commands that act on the
@@ -2097,6 +2138,8 @@ class MainWindow(QMainWindow):
         # applied to every route at once (4B, Q3).
         commands.load(self.db)
         self._apply_settings()
+        # The editors' zoom levels are the restored journal's, or 100% (4C2a-D4).
+        self._load_editor_zoom()
         self._refresh_calendar_marks()
         self._load_date(self.current_date)
         self.day_calendar.refresh()

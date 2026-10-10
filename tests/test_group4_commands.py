@@ -7,10 +7,10 @@ widths (D10), Settings pages and the Help windows. Criteria C4A-1…C4A-11
 the edits to older suites, C4A-13 the mutants of the batch report.
 
 Edit → Undo calls the same QTextEdit.undo() as Ctrl+Z, so it also undoes the
-invisible view-state steps of bugs 38 and 42 (fixed in 4C2). The undo checks
-here therefore settle and size the window before typing and change nothing
-between the typing and the undo; the two cases with a view change in between
-are strict known failures that fail this suite if they start passing.
+invisible view-state steps of bugs 38 and 42 until 4C2a. The undo checks
+here settle and size the window before typing and change nothing between the
+typing and the undo; the two cases with a view change in between were strict
+known failures until 4C2a fixed both (C2a-3) and are ordinary checks now.
 
 FP-9: real key events and real menu clicks; nothing here sends input to the
 desktop (FP-15): every event goes to a widget of this process.
@@ -473,7 +473,7 @@ check("Edit → Undo by a real menu click undoes the last typing in the focused 
       te.toPlainText() == "first\n", repr(te.toPlainText()))
 check("no ambiguous-shortcut warning so far", not ambiguous(), ambiguous())
 
-print("\n--- [C4A-5] bugs 38 and 42 through Edit → Undo (strict known failures → 4C2) ---")
+print("\n--- [C4A-5] bugs 38 and 42 through Edit → Undo (fixed in 4C2a, C2a-3) ---")
 two_steps(te)
 win.editor.zoom_spin.setValue(120)
 settle()
@@ -481,8 +481,8 @@ te.setFocus()
 win._refresh_command_states()
 A["undo"].trigger()
 settle()
-known_failing("Edit → Undo after a zoom change undoes the last typing", te.toPlainText() == "first\n",
-              "bug 42 → 4C2", repr(te.toPlainText()[-20:]))
+check("Edit → Undo after a zoom change undoes the last typing (bug 42)", te.toPlainText() == "first\n",
+      repr(te.toPlainText()[-20:]))
 win.editor.zoom_spin.setValue(100)
 settle()
 two_steps(notes)
@@ -494,8 +494,8 @@ notes.setFocus()
 win._refresh_command_states()
 A["undo"].trigger()
 settle()
-known_failing("Edit → Undo after a UI-font change undoes the last typing (date Reader's Notes)",
-              notes.toPlainText() == "first\n", "bug 38 → 4C2", repr(notes.toPlainText()[-20:]))
+check("Edit → Undo after a UI-font change undoes the last typing (date Reader's Notes; bug 38)",
+      notes.toPlainText() == "first\n", repr(notes.toPlainText()[-20:]))
 if size_before:
     win.db.set_setting("ui_font_size", size_before)
 else:

@@ -50,7 +50,7 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import QEvent, QPoint, QSize, Qt, QUrl, Signal
+from PySide6.QtCore import QEvent, QPoint, QSize, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import (
     QAction, QActionGroup, QColor, QDesktopServices, QFont, QImage, QKeySequence, QPixmap,
     QShortcut, QTextBlockFormat, QTextCharFormat, QTextCursor, QTextDocument,
@@ -70,11 +70,6 @@ from .ui_util import font_scaled, make_shrinkable_combo
 # Spec Part 18. "free" means no repositioning code runs at all — the default,
 # and the behaviour Part 15 asked for. The others place the active line at a
 # fraction of the viewport height.
-# Where a fragment's unzoomed point size is stashed while zoom is applied.
-# A custom text-format property: Qt does not serialize these to HTML, so it
-# cannot leak into stored documents.
-ZOOM_BASE_SIZE_PROPERTY = QTextFormat.UserProperty + 17
-
 WRITING_POSITION_FREE = "free"
 WRITING_POSITIONS = {
     WRITING_POSITION_FREE: None,
@@ -98,10 +93,8 @@ IMAGE_FILTER = "Images (*.png *.jpg *.jpeg *.gif *.bmp *.webp)"
 
 # Zoom is a temporary, view-only magnification of the writing text — it
 # never touches the writing font SIZE setting (that's a separate, saved
-# preference) and never gets baked into the saved content; see
-# RichTextEditor.zoom_in/out/reset_zoom and RichEditor.save() below.
-# Each "step" is one Qt zoomIn()/zoomOut() unit (roughly +/-1pt); the label
-# shown to the user is a percentage purely for readability.
+# preference) and never reaches the document; see RichTextEditor's "view
+# zoom" below. Each step is ZOOM_PERCENT_PER_STEP percent.
 ZOOM_STEP_MIN = -5
 ZOOM_STEP_MAX = 15
 ZOOM_PERCENT_PER_STEP = 10
@@ -163,6 +156,18 @@ class RichTextEditor(QTextEdit):
         # subsystem ("do not create excessive infrastructure solely for this
         # setting").
         self._writing_position: str = WRITING_POSITION_FREE
+        # View zoom draws the document's layout as if on a screen of higher
+        # (or lower) DPI (4C2a-D1): this image is that paint device while the
+        # zoom is not 100%, made for the screen DPI recorded beside it.
+        self._zoom_device: Optional[QImage] = None
+        self._zoom_device_dpi: tuple = ()
+        self._zoom_refresh_pending = False
+        # Scroll-past-end space, as extra scrollbar range (4C2a-D2): the
+        # amount, the maximum Qt itself last set, and a re-entry guard.
+        self._scroll_pad = 0
+        self._qt_scroll_max = self.verticalScrollBar().maximum()
+        self._extending_scroll = False
+        self.verticalScrollBar().rangeChanged.connect(self._extend_scroll_range)
         self._update_bottom_padding()
 
     def set_storage_subdir(self, relative_dir: str):
@@ -171,11 +176,9 @@ class RichTextEditor(QTextEdit):
 
     # ----------------------------------------------------------------- font
     def set_base_font(self, family: str, size: int):
-        """Sets the real, saved writing font — as opposed to zoom, which is
-        a temporary on-screen magnification. Changing the real font resets
-        any active zoom back to 0, so zoom always means 'temporarily larger
-        or smaller than my current writing font', not a compounding offset."""
-        self.reset_zoom()
+        """Sets the real, saved writing font — as opposed to zoom, a
+        magnification of the whole layout, which is left as it is (bug 6,
+        4C2a-D3)."""
         self._base_point_size = float(size)
         self.setFont(QFont(family, size))
 
@@ -183,31 +186,19 @@ class RichTextEditor(QTextEdit):
         """Makes `family`/`size` the writing font of the document about to be
         loaded — its own stored font (4C1a-D1), or the new-document font.
 
-        Unlike set_base_font() this keeps the zoom level: it runs only just
-        before setHtml()/setMarkdown() replace the document, and
-        RichEditor.load() re-applies the active zoom afterwards
-        (reapply_zoom_after_load), exactly as for any other load. The font
-        must equal the stored <body> font before the HTML is read, or Qt
-        writes the stored font onto every character as explicit formatting
-        (bugs 29 and 35)."""
+        It runs just before setHtml()/setMarkdown() replace the document.
+        The font must equal the stored <body> font before the HTML is read,
+        or Qt writes the stored font onto every character as explicit
+        formatting (bugs 29 and 35). Zoom is not involved: it lives in the
+        layout's paint device, not in fonts (4C2a-D1)."""
         self._base_point_size = float(size)
         font = QFont(family)
         font.setPointSizeF(float(size))
         self.setFont(font)
-        # The document's own default font too, at the UNZOOMED size: setFont()
-        # does not reach it when the widget's font is unchanged, and zoom sets
-        # it to the zoomed size. Sizes Qt derives from it while loading (a
-        # legacy Markdown heading's, 4C1b-D1) must not include the zoom, or
-        # the zoom would be stored (4C1b-F1); the zoom is re-applied after.
+        # The document's own default font too: setFont() does not reach it
+        # when the widget's font is unchanged. Sizes Qt derives from it while
+        # loading (a legacy Markdown heading's, 4C1b-D1) come from it.
         self.document().setDefaultFont(font)
-
-    def zoom_default_font(self):
-        """Sets the document's default font to the current zoom level, as
-        _apply_zoom() does, without touching any character (no undo step)."""
-        doc = self.document()
-        default_font = QFont(doc.defaultFont())
-        default_font.setPointSizeF(max(1.0, self._base_point_size * self.zoom_percent() / 100.0))
-        doc.setDefaultFont(default_font)
 
     def base_font(self) -> QFont:
         """The real writing font at its SAVED size, with any active zoom
@@ -222,33 +213,17 @@ class RichTextEditor(QTextEdit):
     # ----------------------------------------------------------------- zoom
     # ---- view zoom ------------------------------------------------------
     #
-    # Zoom is a VIEW property: it changes how big the text looks, never what
-    # the document actually stores (see set_zoom_steps()'s guarantee below,
-    # and save(), which exports at 100% regardless of what's on screen).
+    # Zoom is a VIEW property: it changes how big the document looks, never
+    # what it stores, its undo history or its modified flag (FP-3).
     #
-    # It does NOT use QTextEdit.zoomIn()/zoomOut() any more, and that change
-    # is the fix for a real regression rather than a preference. Qt's own
-    # zoom only adjusts the document's DEFAULT font, which works for
-    # characters that inherit it — but the moment a document is loaded with
-    # setHtml(), Qt's HTML parser stamps the body's font-size onto every
-    # character as an EXPLICIT point size, and explicit sizes ignore the
-    # default entirely. Measured directly:
-    #
-    #     freshly typed document : per-char sizes [0.0]  -> zoomIn() works
-    #     after a setHtml() load : per-char sizes [13.0] -> zoomIn() does nothing
-    #
-    # Since the round-21 switch to HTML persistence, every entry is loaded
-    # through setHtml(), so Qt's zoom silently stopped having any visible
-    # effect. Ctrl+wheel and the Zoom % control were both still firing
-    # correctly into a mechanism that no longer did anything.
-    #
-    # So zoom now scales each character's own point size. To make that
-    # exactly reversible — no drift after repeated zooming, and no chance of
-    # a zoomed size being mistaken for the user's real typography — every
-    # fragment's UNZOOMED size is stashed once in a custom text-format
-    # property, and each zoom level is computed from that stored base rather
-    # than from the currently displayed size. Custom properties are not
-    # serialized by toHtml(), so they never reach storage.
+    # It works on the document's LAYOUT, not on the document: the layout is
+    # given a paint device whose DPI is the screen's times the zoom factor,
+    # so Qt lays out and draws every point size, margin and image that much
+    # larger, as it would for a higher-resolution screen (4C2a-D1). Nothing
+    # in the document changes. Earlier versions rewrote every character's
+    # point size instead: each zoom change was an undoable edit (bug 42), a
+    # size chosen while zoomed was lost on save, and the loop that restored
+    # the sizes on save could crash (bug 48).
     def zoom_in(self):
         self.set_zoom_steps(self._zoom_steps + 1)
 
@@ -269,102 +244,58 @@ class RichTextEditor(QTextEdit):
         self._apply_zoom()
         self.zoomChanged.emit(self.zoom_percent())
 
+    def _screen_dpi(self) -> tuple:
+        """The logical DPI the viewport is drawn at: what a 100% layout uses."""
+        viewport = self.viewport()
+        return float(viewport.logicalDpiX()), float(viewport.logicalDpiY())
+
     def _apply_zoom(self):
-        """Rescales every character from its stored unzoomed size.
-
-        Returning to 100% restores the document EXACTLY as it was, including
-        for characters that carried no explicit size at all. That distinction
-        matters: text the user has never individually resized inherits the
-        "Default writing font" setting, and if zoom left a baked-in size
-        behind, such text would silently stop following that setting forever
-        after the first scroll — a regression caught by the round-7 suite,
-        which checks precisely this. So an inherited size is recorded as the
-        sentinel 0.0 and is genuinely CLEARED again at 100%, not rewritten
-        as a number that merely looks the same today.
-
-        Runs as one edit block with signals blocked: zoom is a view
-        operation and must not look like the user typed (which would
-        schedule an autosave and fill the undo stack with zoom steps).
-        """
-        factor = self.zoom_percent() / 100.0
-        at_normal = abs(factor - 1.0) < 1e-9
+        """Points the layout at the paint device for the current zoom: the
+        viewport itself at 100%, otherwise an image whose DPI is the screen's
+        times the factor. Only the layout is told to lay out again; the
+        document's text and formats are untouched."""
+        layout = self.document().documentLayout()
+        if self._zoom_steps == 0:
+            self._zoom_device = None
+            self._zoom_device_dpi = ()
+            layout.setPaintDevice(self.viewport())
+        else:
+            factor = self.zoom_percent() / 100.0
+            dpi_x, dpi_y = self._screen_dpi()
+            device = QImage(1, 1, QImage.Format_ARGB32)
+            device.setDotsPerMeterX(round(dpi_x * factor / 0.0254))
+            device.setDotsPerMeterY(round(dpi_y * factor / 0.0254))
+            self._zoom_device = device
+            self._zoom_device_dpi = (dpi_x, dpi_y)
+            layout.setPaintDevice(device)
         doc = self.document()
+        doc.markContentsDirty(0, doc.characterCount())
+        self.viewport().update()
 
-        default_font = QFont(doc.defaultFont())
-        default_font.setPointSizeF(max(1.0, self._base_point_size * factor))
-        doc.setDefaultFont(default_font)
+    def paintEvent(self, event):
+        # The window moved to another screen, or its screen's logical DPI
+        # changed (4C2/AM-2): a zoomed layout is made again for the new DPI,
+        # just after this paint. Checked here, where every such change ends
+        # up, rather than through screen signals: connecting this widget's
+        # own method to its window's screenChanged at show time made Qt apply
+        # the stylesheet's font over the document's own font (measured in
+        # 4C2a Step C). At 100% the viewport is the paint device and follows
+        # by itself.
+        if (self._zoom_steps and not self._zoom_refresh_pending
+                and self._zoom_device_dpi != self._screen_dpi()):
+            self._zoom_refresh_pending = True
+            QTimer.singleShot(0, self, self._refresh_zoom_for_screen)
+        super().paintEvent(event)
 
-        # Zoom is a VIEW operation. It has to touch stored character formats
-        # (see the docstring), but it must not make the document look edited
-        # — otherwise looking at an entry at 150% would leave it "unsaved"
-        # and prompt on the way out.
-        was_modified = doc.isModified()
-        was_blocked = self.blockSignals(True)
-        doc.blockSignals(True)
-        anchor = QTextCursor(doc)
-        anchor.beginEditBlock()
-        block = doc.begin()
-        while block.isValid():
-            it = block.begin()
-            while not it.atEnd():
-                fragment = it.fragment()
-                if fragment.isValid():
-                    fmt = fragment.charFormat()
-                    stored = fmt.property(ZOOM_BASE_SIZE_PROPERTY)
-                    if stored is None:
-                        # First zoom for this fragment: remember what it had
-                        # at 100%. 0.0 means "inherits the document default"
-                        # and must come back as inherited, not as a number.
-                        stored = float(fmt.fontPointSize() or 0.0)
-                        fmt.setProperty(ZOOM_BASE_SIZE_PROPERTY, stored)
-                    stored = float(stored)
-
-                    if at_normal:
-                        fmt.clearProperty(ZOOM_BASE_SIZE_PROPERTY)
-                        if stored <= 0:
-                            fmt.clearProperty(QTextFormat.FontPointSize)
-                        else:
-                            fmt.setFontPointSize(stored)
-                    else:
-                        base = stored if stored > 0 else self._base_point_size
-                        fmt.setFontPointSize(max(1.0, base * factor))
-
-                    span = QTextCursor(doc)
-                    span.setPosition(fragment.position())
-                    span.setPosition(fragment.position() + fragment.length(),
-                                     QTextCursor.KeepAnchor)
-                    span.setCharFormat(fmt)
-                it += 1
-            block = block.next()
-        anchor.endEditBlock()
-        doc.blockSignals(False)
-        self.blockSignals(was_blocked)
-        doc.setModified(was_modified)
-        self._update_bottom_padding()
-
-    def reapply_zoom_after_load(self):
-        """Re-applies the active zoom level to a freshly-loaded document.
-
-        setHtml()/setMarkdown() rebuild the document from scratch, so the
-        stashed unzoomed sizes vanish and every character comes back at its
-        stored size. Without this, navigating to another day would look like
-        zoom had reset itself."""
-        if self._zoom_steps:
+    def _refresh_zoom_for_screen(self):
+        self._zoom_refresh_pending = False
+        if self._zoom_steps and self._zoom_device_dpi != self._screen_dpi():
             self._apply_zoom()
 
     def base_point_size(self) -> float:
-        """The unzoomed default font size — what a stored document should
-        carry as its document default, whatever is on screen."""
+        """The document's own default font size: what a stored document
+        carries as its document default."""
         return self._base_point_size
-
-    def strip_zoom_for_export(self) -> int:
-        """Drops to 100% and returns the level that was active, so a caller
-        can restore it after serializing. This is what keeps view zoom out
-        of stored documents — see RichEditor.save()."""
-        steps = self._zoom_steps
-        if steps:
-            self.set_zoom_steps(0)
-        return steps
 
     def zoom_percent(self) -> int:
         return 100 + self._zoom_steps * ZOOM_PERCENT_PER_STEP
@@ -437,13 +368,10 @@ class RichTextEditor(QTextEdit):
         scrollbar.setValue(scrollbar.value() + int(delta))
 
     def _update_bottom_padding(self):
-        """Keeps a blank margin below the document roughly half the
+        """Keeps room to scroll past the last line, roughly half the
         viewport's height, so the last line can always be scrolled up to
         the middle of the screen. Re-applied on every resize (the right
-        amount of padding depends on the current viewport height) and
-        after loading a different day/project's content (setHtml()/
-        setMarkdown() both rebuild the document's root frame, which would
-        otherwise silently drop this)."""
+        amount depends on the current viewport height)."""
         # Half a viewport is enough for "free" and for keeping the last line
         # off the bottom edge. But a writing position that asks for the
         # active line HIGHER than the middle needs more space beneath it than
@@ -455,25 +383,36 @@ class RichTextEditor(QTextEdit):
         # found by measuring where the caret actually landed.
         fraction = WRITING_POSITIONS.get(self._writing_position)
         needed = 0.5 if fraction is None else max(0.5, 1.0 - fraction)
-        self._set_bottom_padding(max(0, int(self.viewport().height() * needed)))
+        pad = max(0, int(self.viewport().height() * needed))
+        if pad != self._scroll_pad:
+            self._scroll_pad = pad
+            self._set_scroll_range()
 
-    def _set_bottom_padding(self, pad: float):
-        """The scroll-past-the-last-line space. A VIEW affordance, sized to
-        the window — so like zoom and the font setting, it must not make the
-        document look edited. Without this guard, merely resizing the window
-        marked every open document unsaved (it is recomputed on every
-        resizeEvent), and closing the app would ask to save writing nobody
-        had touched."""
-        root_frame = self.document().rootFrame()
-        fmt = root_frame.frameFormat()
-        if fmt.bottomMargin() != pad:
-            was_modified = self.document().isModified()
-            fmt.setBottomMargin(pad)
-            root_frame.setFrameFormat(fmt)
-            self.document().setModified(was_modified)
+    def _extend_scroll_range(self, _minimum: int, maximum: int):
+        """Qt has just set the scrollbar's range from the document's height:
+        remember its maximum and add the scroll-past-end space. Qt bounds the
+        scrollbar's value only after emitting this signal, against the
+        extended range, so writing at the end never makes the view jump."""
+        if self._extending_scroll:
+            return
+        self._qt_scroll_max = maximum
+        self._set_scroll_range()
+
+    def _set_scroll_range(self):
+        """The scroll-past-end space is extra scrollbar range, outside the
+        document (4C2a-D2). It used to be the root frame's bottom margin,
+        and changing that margin on every resize or font change was an
+        undoable edit (bug 38)."""
+        bar = self.verticalScrollBar()
+        self._extending_scroll = True
+        try:
+            bar.setRange(bar.minimum(), max(bar.minimum(), self._qt_scroll_max + self._scroll_pad))
+        finally:
+            self._extending_scroll = False
 
     def bottom_padding(self) -> float:
-        return self.document().rootFrame().frameFormat().bottomMargin()
+        """The scroll-past-end space, in pixels."""
+        return self._scroll_pad
 
     # Round 21: this editor no longer forces the caret to any particular
     # vertical position while typing. Through round 20, _keep_cursor_centered()
@@ -882,17 +821,14 @@ def export_document(text_edit) -> "QTextDocument":
     happens on a throwaway copy, and the live document — the user's undo
     history, their caret, their modified flag — is never touched.
 
-    The two normalizations are unchanged, just applied to the copy:
-      * zoom is a VIEW setting, so what gets stored is always the 100%
-        document (each fragment restored from the base size zoom stashed on
-        it, and genuinely cleared where the size was inherited);
-      * the blank space below the last line is a view affordance sized to
-        the window, so it must not end up in the stored bytes.
+    Zoom and the scroll-past-end space no longer touch the document at
+    all (4C2a-D1, D2); the root frame's margin is still put back to the
+    default here as a safeguard, so no view state can reach stored bytes.
     """
     document = text_edit.document().clone(text_edit)
 
-    # The scroll-past-end padding lives on the root frame's bottom margin.
-    # Put it back to the document's own default margin — NOT to 0. Any root
+    # The scroll-past-end padding lived on the root frame's bottom margin
+    # until 4C2a. Keep the margin at the document's own default — NOT 0. Any root
     # frame format that differs from the default makes Qt wrap the whole
     # body in a `-qt-table-type: root` table when serializing, and Qt's own
     # HTML reader turns that wrapper back into one extra empty paragraph
@@ -911,29 +847,6 @@ def export_document(text_edit) -> "QTextDocument":
     default_font = QFont(document.defaultFont())
     default_font.setPointSizeF(max(1.0, text_edit.base_point_size()))
     document.setDefaultFont(default_font)
-
-    block = document.begin()
-    while block.isValid():
-        it = block.begin()
-        while not it.atEnd():
-            fragment = it.fragment()
-            if fragment.isValid():
-                fmt = fragment.charFormat()
-                stored = fmt.property(ZOOM_BASE_SIZE_PROPERTY)
-                if stored is not None:
-                    stored = float(stored)
-                    fmt.clearProperty(ZOOM_BASE_SIZE_PROPERTY)
-                    if stored <= 0:
-                        fmt.clearProperty(QTextFormat.FontPointSize)
-                    else:
-                        fmt.setFontPointSize(stored)
-                    span = QTextCursor(document)
-                    span.setPosition(fragment.position())
-                    span.setPosition(fragment.position() + fragment.length(),
-                                     QTextCursor.KeepAnchor)
-                    span.setCharFormat(fmt)
-            it += 1
-        block = block.next()
 
     return document
 
@@ -1905,7 +1818,7 @@ class RichEditor(QWidget):
         # to write onto the characters as explicit formatting, and an
         # unedited save gives back the same bytes whatever the setting is now.
         # A document without a stored font (empty, legacy Markdown) starts in
-        # the new-document font. Zoom is kept (adopt_document_font).
+        # the new-document font.
         own_font = stored_document_font(content) if fmt != "markdown" else None
         self._document_font = own_font or self._new_document_font
         self.text_edit.adopt_document_font(*self._document_font)
@@ -1945,26 +1858,19 @@ class RichEditor(QWidget):
         # bold or heading text at the start of a written paragraph.
         self.text_edit.setTextCursor(QTextCursor(self.text_edit.document()))
         self.text_edit.blockSignals(False)
-        # setHtml()/setMarkdown() both rebuild the document's root frame,
-        # which silently drops the bottom padding set up in
-        # RichTextEditor.__init__/resizeEvent — reapply it so switching to
-        # a different day/project doesn't lose the "scroll past the last
-        # line" padding.
-        self.text_edit._update_bottom_padding()
-        # Loading replaces the document wholesale, which discards the
-        # per-fragment base sizes zoom relies on and resets every character
-        # to its stored (100%) size. Re-apply the current zoom level so
-        # switching days doesn't silently snap the view back to 100%.
-        self.text_edit.reapply_zoom_after_load()
+        # The zoom (the layout's paint device) and the scroll-past-end space
+        # (scrollbar range) live outside the document, so a load keeps both.
         # A freshly loaded document is, by definition, exactly what is
-        # stored: it starts clean, with nothing to undo. Clearing the stack
-        # here matters because re-applying the zoom level (just above) is a
-        # real document edit — without this, the first Ctrl+Z after opening
-        # an entry would undo the app's own zoom restoration rather than
-        # anything the user did. Everything recorded after this point is a
-        # genuine edit by them.
+        # stored: it starts clean, with nothing to undo (the heading and
+        # blank-document settling above are not the user's edits).
         self.text_edit.document().clearUndoRedoStacks()
         self.text_edit.document().setModified(False)
+        # setHtml() emits modificationChanged(True) and then clears the flag
+        # without emitting False (measured in 4C2a Step C), so whatever shows
+        # "unsaved" from that signal would stay on. Until 4C2a the padding's
+        # frame-format change after every load happened to emit the False;
+        # now the load says so itself.
+        self.text_edit.document().modificationChanged.emit(False)
         # The font and size boxes show the loaded document's own font at once,
         # not the previous document's until the caret moves (4C1a-F1, F1-D3).
         self._sync_toolbar_state()
@@ -1979,22 +1885,9 @@ class RichEditor(QWidget):
         the entry-exists test read instead of html — see database.py's
         module docstring for why raw HTML must never leak into those.
 
-        Exported at zoom=0 regardless of the current on-screen zoom, so
-        what's saved is never influenced by a temporary view setting —
-        belt-and-suspenders on top of zoom already not touching the saved
-        document (zoomIn()/zoomOut() only ever change the on-screen QFont's
-        pixel metrics, never any QTextCharFormat stored in the document).
-        #
-        # Resetting zoom and reapplying it changes on-screen font sizes
-        # twice in a row, and Qt does not reliably preserve the exact
-        # scroll position across that (it keeps roughly the same top-of-
-        # viewport block anchored, not the same pixel offset) — visible as
-        # the view jumping away from the bottom while you're mid-entry,
-        # since this runs on every autosave. Explicitly saving and
-        # restoring the scrollbar value around the zoom dance makes save()
-        # a read-only operation from the user's point of view, exactly as
-        # it should be — it's meant to just report the content, never to
-        # move the view."""
+        The on-screen zoom never reaches what is saved: it lives in the
+        layout's paint device, not in the document (4C2a-D1), and saving
+        never touches the live document or the view."""
         # Serialized from a CLONE — see export_document() for why. The live
         # document, its undo history and its modified flag are untouched by
         # saving, which is what makes Ctrl+Z after Ctrl+S undo the user's
@@ -2020,9 +1913,9 @@ class RichEditor(QWidget):
 
         Qt's own per-document modified flag, not a second flag kept in
         parallel — it is set by every real edit and by nothing else, now
-        that saving works on a clone and zoom restores it (see
-        export_document()). One flag, set by the editor, cleared by the one
-        save path.
+        that saving works on a clone and zoom lives outside the document
+        (see export_document()). One flag, set by the editor, cleared by
+        the one save path.
         """
         return self.text_edit.document().isModified()
 
@@ -2031,9 +1924,8 @@ class RichEditor(QWidget):
         self.text_edit.document().setModified(False)
 
     def plain_text(self) -> str:
-        """A lightweight plain-text read of the current content — unlike
-        save(), this doesn't need the zoom/scrollbar dance (zoom is purely
-        a view-level font size change; it never affects toPlainText())."""
+        """A lightweight plain-text read of the current content, without
+        save()'s clone."""
         return self.text_edit.toPlainText()
 
     def set_writing_position(self, position: str):
@@ -2081,7 +1973,7 @@ class RichEditor(QWidget):
         # The setting is the font NEW documents start in (4C1a-D1, Master Spec
         # §14.9 decided 2026-10-02). An empty, unwritten document open now
         # takes it at once; a document with content keeps its own stored
-        # font. Either way zoom is reset as before (bug 6, left to 4C2).
+        # font. Zoom is left alone (bug 6, 4C2a-D3).
         self._new_document_font = (family, float(size))
         document = self.text_edit.document()
         if document_has_content(document.toHtml(), document.toPlainText()):
@@ -2089,7 +1981,6 @@ class RichEditor(QWidget):
             # settings path has just applied the application font and the
             # stylesheet, which override this widget's font (FP-5), and the
             # document's font must not follow them.
-            self.text_edit.reset_zoom()
             self.text_edit.adopt_document_font(*self._document_font)
         else:
             self.text_edit.set_base_font(family, size)
@@ -2109,19 +2000,14 @@ class RichEditor(QWidget):
         Notes, 4C1a-D2): a new, empty document starts in the application
         font; a document with content keeps its own stored font. Called after
         every settings change, because the application font and stylesheet
-        override this widget's font (FP-5). Keeps the zoom level and the
-        modified flag — unlike set_font(), it is not the settings' writing-font
-        route and leaves bug 6's zoom reset alone."""
+        override this widget's font (FP-5). Keeps the modified flag; zoom is
+        not affected (it lives in the layout, 4C2a-D1)."""
         document = self.text_edit.document()
         was_modified = document.isModified()
         self._new_document_font = (family, float(size))
         if not document_has_content(document.toHtml(), document.toPlainText()):
             self._document_font = self._new_document_font
         self.text_edit.adopt_document_font(*self._document_font)
-        # Keep the zoom level on the default font only: re-applying zoom to
-        # the characters would be an undoable edit of an open document
-        # (FP-3); their zoomed sizes are untouched by a font change anyway.
-        self.text_edit.zoom_default_font()
         document.setModified(was_modified)
 
     def append_note(self, label: str, text: str):

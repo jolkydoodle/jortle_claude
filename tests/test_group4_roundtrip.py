@@ -1127,7 +1127,7 @@ from app.rich_editor import stored_document_font  # noqa: E402
 # F1a-1: after a writing-font, UI-font and theme change, both Reader's Notes
 # editors (holding content, at a non-100% zoom) stay unmodified, gain no undo
 # step and keep their zoom. Daily Jorts is in front, so the date notes are on
-# screen: there the UI-font change adds bug 38's padding undo steps.
+# screen: there the UI-font change added bug 38's padding undo steps until 4C2a.
 project.show(win)                               # loads the project notes (content)
 journal.show(win)                               # loads the date notes for D (content)
 date_editor, project_editor = win.reader_notes.editor, win.projects_widget.reader_notes.editor
@@ -1152,10 +1152,7 @@ for change, apply in (
         undo_kept = editor.text_edit.document().availableUndoSteps() == before[editor]
         label = f"[F1a-1] {change} change: {name} gains no undo step"
         detail = f"{before[editor]} -> {editor.text_edit.document().availableUndoSteps()}"
-        if change == "UI font" and editor is date_editor:
-            known_failing(label, undo_kept, "bug 38 → 4C2", detail)
-        else:
-            check(label, undo_kept, detail)
+        check(label, undo_kept, detail)          # bug 38, fixed in 4C2a
 win.db.set_setting("font_family", "Georgia")
 win.db._conn.execute("DELETE FROM settings WHERE key='ui_font_size'")
 win.db._conn.commit()
@@ -1615,10 +1612,17 @@ for zoom, md_date in ((120, "2025-11-08"), (70, "2025-11-09")):
     settle()
     win._request_date(md_date)
     settle()
+    # Since 4C2a zoom lives in the layout, not in the document (4C2a-D1): the
+    # live document holds Qt's Markdown sizes at any zoom, and what is shown
+    # is that size times the zoom — measured as laid-out line heights.
     shown = heading_sizes(sd.fingerprint(win.editor.text_edit.document()))
-    expected = [round(size * zoom / 100, 2) for size in (26.0, 19.5, 15.6)]
+    check(f"[C1b-8] at {zoom}% zoom: the live document keeps Qt's Markdown heading sizes (26 / 19.5 / 15.6 pt)",
+          shown == [26.0, 19.5, 15.6], shown)
+    zoomed_heights = line_heights(win.editor, 4)
+    expected = [round(h * zoom / 100, 1) for h in reference_heights]
     check(f"[C1b-8] at {zoom}% zoom: a legacy Markdown entry's headings show at Qt's Markdown size times the zoom",
-          all(a is not None and abs(a - b) < 0.05 for a, b in zip(shown, expected)), f"shown {shown}, expected {expected}")
+          all(abs(a - b) <= 1.5 for a, b in zip(zoomed_heights, expected)),
+          f"line heights {zoomed_heights}, expected {expected}")
     ctrl_s(win, win.editor.text_edit)
     stored_sizes = heading_sizes(fp_of(entry_row(win, md_date)[0]))
     check(f"[C1b-8] at {zoom}% zoom: its upgrade on save stores Qt's Markdown sizes (26 / 19.5 / 15.6 pt), not zoomed ones",

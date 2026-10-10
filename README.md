@@ -116,10 +116,13 @@ dividers between them:
   you've customized anything, comes from the "Default writing font" in
   Settings — see below.)
   At the far right, `−` / percentage / `+` (or Ctrl+Scroll, View → Zoom
-  In, Ctrl+- / Ctrl+0) zoom the text in and out temporarily, the way a browser
-  or PDF viewer does — it's just a bigger/smaller on-screen view, separate
-  from the actual writing font/size above, resets each time you reopen the
-  app, and is never saved into the entry itself.
+  In, Ctrl+- / Ctrl+0) zoom the page in and out, the way a browser or PDF
+  viewer does — text, spacing and photos together. It's just a bigger/smaller
+  on-screen view, separate from the actual writing font/size above, and is
+  never saved into the entry itself: it adds nothing to Undo and doesn't mark
+  the entry as changed. Each editor (the journal, a project, and the two
+  Reader's Notes) remembers its own zoom between runs, and changing a setting
+  no longer resets it.
 
   **Ctrl+F (Edit → Find) finds text in the editor you are using**:
   a small bar drops in above the writing area with a match count, Prev/Next
@@ -319,7 +322,7 @@ There are **three separate zooms in this app, and they stay separate**:
 
 ```
 calendar zoom        how tall an hour is on the timeline        Ctrl+scroll on a timeline
-editor zoom          how big your writing looks, temporarily    Ctrl+scroll in the editor
+editor zoom          how big your writing looks on screen       Ctrl+scroll in the editor
 application font     the size of the whole UI                   Settings → Appearance
 ```
 
