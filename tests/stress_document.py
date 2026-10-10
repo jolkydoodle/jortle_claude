@@ -722,7 +722,7 @@ def build_compact(editor, settle) -> None:
         kit.select_words(first, word)
         kit.trigger(tip)
     kit.select_paragraphs("Notes bullet one", "Notes bullet two")
-    kit.trigger("Bulleted list")
+    kit.trigger("Bullet list")
 
 
 def compact_props() -> list:

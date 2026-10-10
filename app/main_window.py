@@ -78,6 +78,8 @@ class MainWindow(QMainWindow):
         # Settle the autosave preference before anything can autosave — an
         # install that has always had it keeps it; a new one starts manual.
         ensure_autosave_default(self.db)
+        # The user's hotkeys, before any action or editor is built (4B-D2).
+        commands.load(self.db)
         # Daily-entry version history and recovery checkpoints: WHEN they are
         # made (entry_history.py). A child of this window so a restore's
         # database swap re-points it like every other holder.
@@ -312,8 +314,9 @@ class MainWindow(QMainWindow):
             self.command_actions: dict[str, QAction] = {}
         spec = commands.command(command_id)
         action = QAction(spec.label, self)
+        # The keys and the tooltip follow the assigned hotkeys (4B-D5).
         action.setToolTip(commands.tooltip(command_id))
-        action.setShortcuts(commands.key_sequences(command_id))
+        action.setShortcuts(commands.registered_sequences(command_id))
         action.setCheckable(checkable)
         if checkable:
             action.toggled.connect(handler)
@@ -416,7 +419,26 @@ class MainWindow(QMainWindow):
         # A method, not a lambda: Qt disconnects it when this window is
         # destroyed, while the application (and its signal) lives on.
         QApplication.instance().focusChanged.connect(self._on_focus_changed)
+        commands.notifier.changed.connect(self._refresh_command_keys)
         self._refresh_command_states()
+
+    def _refresh_command_keys(self):
+        """The assigned hotkeys changed (Settings → Hotkeys, or a restore):
+        every window action takes its new keys and tooltip — the menus show
+        the action's own key — and so do the texts naming the Save key
+        (4B-D5). The editors refresh themselves."""
+        for command_id, action in self.command_actions.items():
+            if command_id in commands.BY_ID:
+                action.setShortcuts(commands.registered_sequences(command_id))
+                action.setToolTip(commands.tooltip(command_id))
+        self._refresh_save_key_texts()
+
+    def _refresh_save_key_texts(self):
+        self.autosave_action.setToolTip(
+            "Autosave on: your writing is saved a moment after you stop typing.\n"
+            f"Autosave off: nothing is written until you {commands.save_key_phrase()}, and you are "
+            "asked before unsaved changes would be lost.")
+        self.unsaved_label.setText(f"● Unsaved changes — {commands.save_key_hint()}")
 
     def _on_focus_changed(self, _old, _new):
         self._refresh_command_states()
@@ -827,19 +849,17 @@ class MainWindow(QMainWindow):
         self.autosave_action = QAction("Autosave", self)
         self.autosave_action.setCheckable(True)
         self.autosave_action.setChecked(autosave_enabled(self.db))
-        self.autosave_action.setToolTip(
-            "Autosave on: your writing is saved a moment after you stop typing.\n"
-            "Autosave off: nothing is written until you press Ctrl+S, and you are "
-            "asked before unsaved changes would be lost.")
         self.autosave_action.toggled.connect(self.set_autosave)
         self.autosave_button = QToolButton()
         self.autosave_button.setDefaultAction(self.autosave_action)
         self.autosave_button.setToolButtonStyle(Qt.ToolButtonTextOnly)
         self.autosave_button.setObjectName("AutosaveToggle")
 
-        self.unsaved_label = QLabel("● Unsaved changes — Ctrl+S to save")
+        self.unsaved_label = QLabel()
         self.unsaved_label.setObjectName("UnsavedIndicator")
         self.unsaved_label.setVisible(False)
+        # Both texts name the Save key as now assigned (4B-D5).
+        self._refresh_save_key_texts()
 
         # Shown only when an automatic backup is overdue or the last one failed.
         self._backup_indicator = QLabel("")
@@ -2073,6 +2093,9 @@ class MainWindow(QMainWindow):
         self.calendar_panel.tag_picker.reload_markers()
         self.projects_widget.refresh_project_list()
         self.nav_history.clear()
+        # The hotkeys are the restored journal's (or the defaults): read and
+        # applied to every route at once (4B, Q3).
+        commands.load(self.db)
         self._apply_settings()
         self._refresh_calendar_marks()
         self._load_date(self.current_date)

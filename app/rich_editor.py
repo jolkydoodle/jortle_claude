@@ -57,9 +57,9 @@ from PySide6.QtGui import (
     QTextFormat, QTextListFormat
 )
 from PySide6.QtWidgets import (
-    QColorDialog, QComboBox, QDialog, QDoubleSpinBox, QFileDialog, QFontComboBox, QFrame,
-    QHBoxLayout, QInputDialog, QLabel, QLineEdit, QMenu, QMessageBox, QPushButton, QSpinBox,
-    QTextEdit, QToolBar, QToolButton, QVBoxLayout, QWidget
+    QApplication, QColorDialog, QComboBox, QDialog, QDoubleSpinBox, QFileDialog, QFontComboBox,
+    QFrame, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QMenu, QMessageBox, QPushButton,
+    QSpinBox, QTextEdit, QToolBar, QToolButton, QVBoxLayout, QWidget
 )
 
 from . import commands, date_links
@@ -624,15 +624,48 @@ class RichTextEditor(QTextEdit):
         self.viewport().setCursor(Qt.PointingHandCursor if anchor else Qt.IBeamCursor)
         super().mouseMoveEvent(event)
 
-    def mouseReleaseEvent(self, event):
-        anchor = self._anchor_at(event.pos())
-        if not anchor and not self.textCursor().hasSelection():
-            # A date typed since this entry was loaded is not a link in the
-            # live document (see "internal date links" below); it navigates
-            # exactly as a stored link does.
-            typed_date = self._unlinked_date_at(event.pos())
+    def _link_at(self, pos: QPoint) -> str:
+        """The link under `pos`: a stored link, or a date typed since this
+        entry was loaded, which is not a link in the live document (see
+        "internal date links" below) but navigates exactly as one does."""
+        anchor = self._anchor_at(pos)
+        if not anchor:
+            typed_date = self._unlinked_date_at(pos)
             if typed_date:
                 anchor = date_links.link_href(typed_date)
+        return anchor
+
+    def mousePressEvent(self, event):
+        # Where the press was and which link it was on: a release follows a
+        # link only when it ends this same press as a click (bug 40).
+        press_anchor = self._link_at(event.pos()) if event.button() == Qt.LeftButton else None
+        super().mousePressEvent(event)
+        # The selection as the press left it: a press inside a selection
+        # keeps it (Qt's drag-and-drop of the selected text), any other
+        # press clears it.
+        cursor = self.textCursor()
+        self._press = (None if press_anchor is None else
+                       (event.pos(), press_anchor, cursor.selectionStart(), cursor.selectionEnd()))
+
+    def _is_link_click(self, event, anchor: str) -> bool:
+        """A click on `anchor`, not the end of a drag: the press was on the
+        same link, the mouse moved less than the platform's drag distance,
+        and the gesture selected nothing (bug 40, 4B-D7). A drag-selection
+        that ends on a link only selects."""
+        press = getattr(self, "_press", None)
+        self._press = None
+        if press is None or event.button() != Qt.LeftButton:
+            return False
+        press_pos, press_anchor, start, end = press
+        moved = (event.pos() - press_pos).manhattanLength()
+        cursor = self.textCursor()
+        return (press_anchor == anchor and moved < QApplication.startDragDistance()
+                and (cursor.selectionStart(), cursor.selectionEnd()) == (start, end))
+
+    def mouseReleaseEvent(self, event):
+        anchor = self._link_at(event.pos())
+        if anchor and not self._is_link_click(event, anchor):
+            anchor = ""
         if anchor:
             internal_date = date_links.parse_link(anchor)
             if internal_date:
@@ -947,6 +980,11 @@ class RichEditor(QWidget):
 
         self._find_ranges: list[tuple[int, int]] = []
         self._find_current_index = -1
+        # This editor's command actions and the zoom buttons, whose keys and
+        # tooltips follow the assigned hotkeys (4B-D5).
+        self.command_actions: dict[str, QAction] = {}
+        self._zoom_buttons: list[tuple[QAction, str]] = []
+        self._find_shortcut: Optional[QShortcut] = None
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -976,9 +1014,24 @@ class RichEditor(QWidget):
         layout.addWidget(self.text_edit)
 
         if read_only:
-            for keys in commands.key_sequences("find"):
-                find_shortcut = QShortcut(keys, self.text_edit, activated=self.show_find_bar)
-                find_shortcut.setContext(Qt.WidgetWithChildrenShortcut)
+            self._find_shortcut = QShortcut(self.text_edit)
+            self._find_shortcut.setContext(Qt.WidgetWithChildrenShortcut)
+            self._find_shortcut.activated.connect(self.show_find_bar)
+        elif compact:
+            # Reader's Notes has no alignment buttons but has the alignment
+            # keys (bug 12): the same commands, as actions of this editor
+            # with no toolbar button.
+            self.alignment_actions = {
+                command_id: self._command_action(None, command_id, label,
+                                                 lambda _c=False, f=flag: self._set_alignment(f))
+                for command_id, label, flag in (
+                    ("align_left", "Align Left", Qt.AlignLeft),
+                    ("align_center", "Align Center", Qt.AlignHCenter),
+                    ("align_right", "Align Right", Qt.AlignRight),
+                    ("align_justify", "Justify", Qt.AlignJustify))}
+        self._refresh_command_keys()
+        # A method of this widget, so Qt drops the connection with it.
+        commands.notifier.changed.connect(self._refresh_command_keys)
 
         self.text_edit.textChanged.connect(self.textChanged.emit)
         self.text_edit.cursorPositionChanged.connect(self._sync_toolbar_state)
@@ -1067,9 +1120,12 @@ class RichEditor(QWidget):
         self.italic_btn = self._command_action(bar, "italic", "I", self._toggle_italic, checkable=True)
         self.underline_btn = self._command_action(bar, "underline", "U", self._toggle_underline,
                                                   checkable=True)
-        self.strike_btn = self._tool_action(bar, "S̶", "Strikethrough", self._toggle_strikethrough, checkable=True)
-        self.super_btn = self._tool_action(bar, "x²", "Superscript", self._toggle_superscript, checkable=True)
-        self.sub_btn = self._tool_action(bar, "x₂", "Subscript", self._toggle_subscript, checkable=True)
+        self.strike_btn = self._command_action(bar, "strikethrough", "S̶", self._toggle_strikethrough,
+                                               checkable=True)
+        self.super_btn = self._command_action(bar, "superscript", "x²", self._toggle_superscript,
+                                              checkable=True)
+        self.sub_btn = self._command_action(bar, "subscript", "x₂", self._toggle_subscript,
+                                            checkable=True)
 
         if self.compact:
             # Reader's Notes stops here: bold/italic/underline/strike/super/
@@ -1079,17 +1135,17 @@ class RichEditor(QWidget):
             # arrives by paste or from another editor; it just isn't offered
             # as a control here.
             bar.addSeparator()
-            self._tool_action(bar, "•", "Bulleted list", self._toggle_bullet_list)
-            self._tool_action(bar, "1.", "Numbered list", self._toggle_numbered_list)
+            self._command_action(bar, "bullet_list", "•", self._toggle_bullet_list)
+            self._command_action(bar, "numbered_list", "1.", self._toggle_numbered_list)
             return bar
 
         bar.addSeparator()
 
-        self._tool_action(bar, "🎨", "Text color", self._pick_text_color, menu=self._build_color_menu())
-        self._tool_action(bar, "🖍", "Highlight (text background color)",
-                           self._pick_highlight_color, menu=self._build_highlight_menu())
-        self._tool_action(bar, "✧", "Clear formatting (keep the text, drop its styling)",
-                           self._clear_formatting)
+        self._command_action(bar, "text_color", "🎨", self._pick_text_color,
+                             menu=self._build_color_menu())
+        self._command_action(bar, "highlight", "🖍", self._pick_highlight_color,
+                             menu=self._build_highlight_menu())
+        self._command_action(bar, "clear_formatting", "✧", self._clear_formatting)
 
         # No Find button: Find is Edit → Find (Ctrl+F) and needs no
         # permanent toolbar space (Master Spec §51.2, 4A-D5).
@@ -1140,17 +1196,17 @@ class RichEditor(QWidget):
 
         bar.addSeparator()
 
-        self._tool_action(bar, "→|", "Increase indent", self._indent)
-        self._tool_action(bar, "|←", "Decrease indent", self._outdent)
-        self._tool_action(bar, "•", "Bullet list", self._toggle_bullet_list)
-        self._tool_action(bar, "1.", "Numbered list", self._toggle_numbered_list)
-        self._tool_action(bar, "❝", "Quote", self._toggle_quote)
+        self._command_action(bar, "indent", "→|", self._indent)
+        self._command_action(bar, "outdent", "|←", self._outdent)
+        self._command_action(bar, "bullet_list", "•", self._toggle_bullet_list)
+        self._command_action(bar, "numbered_list", "1.", self._toggle_numbered_list)
+        self._command_action(bar, "quote", "❝", self._toggle_quote)
 
         bar.addSeparator()
 
         # ---- Insert group
-        self._tool_action(bar, "🔗", "Insert Link (select text first, optional)", self.text_edit.insert_link)
-        self._tool_action(bar, "🖼", "Insert Photo", self.text_edit.insert_photo)
+        self._command_action(bar, "insert_link", "🔗", self.text_edit.insert_link)
+        self._command_action(bar, "insert_photo", "🖼", self.text_edit.insert_photo)
 
         # The shortcuts are carried by the toolbar actions themselves
         # (_command_action); the zoom keys belong to the window's View
@@ -1173,19 +1229,38 @@ class RichEditor(QWidget):
                 tb.setPopupMode(QToolButton.MenuButtonPopup)
         return action
 
-    def _command_action(self, bar: QToolBar, command_id: str, label, handler,
-                        checkable=False) -> QAction:
+    def _command_action(self, bar: Optional[QToolBar], command_id: str, label, handler,
+                        checkable=False, menu=None) -> QAction:
         """A toolbar button that is also its command's shortcut — one QAction
         for both routes (Master Spec §51.3, 4A-D3). Its tooltip and key come
-        from the command table (app/commands.py). The action is added to this
+        from the command table (app/commands.py) and follow the assigned
+        hotkeys (_refresh_command_keys, 4B-D5). The action is added to this
         editor as well as to the toolbar, so the key works wherever the focus
         is inside this editor (and only there: two editors on screen at once,
-        such as the journal and its Reader's Notes, never compete for it)."""
-        action = self._tool_action(bar, label, commands.tooltip(command_id), handler, checkable)
-        action.setShortcuts(commands.key_sequences(command_id))
+        such as the journal and its Reader's Notes, never compete for it).
+        With no toolbar (`bar` None) it is a key without a button."""
+        if bar is None:
+            action = QAction(label, self)
+            action.setCheckable(checkable)
+            action.triggered.connect(handler)
+        else:
+            action = self._tool_action(bar, label, commands.tooltip(command_id), handler,
+                                       checkable, menu)
         action.setShortcutContext(Qt.WidgetWithChildrenShortcut)
         self.addAction(action)
+        self.command_actions[command_id] = action
         return action
+
+    def _refresh_command_keys(self):
+        """Puts the assigned keys on this editor's actions and in its
+        tooltips (at build, and whenever the hotkeys change, 4B-D5)."""
+        for command_id, action in self.command_actions.items():
+            action.setShortcuts(commands.registered_sequences(command_id))
+            action.setToolTip(commands.tooltip(command_id))
+        for action, command_id in self._zoom_buttons:
+            action.setToolTip(commands.tooltip(command_id))
+        if self._find_shortcut is not None:
+            self._find_shortcut.setKeys(commands.registered_sequences("find"))
 
     SPACING_MAX_PT = 72.0
 
@@ -1227,7 +1302,8 @@ class RichEditor(QWidget):
         the two cannot ping-pong."""
         # These buttons zoom this editor through the same functions as the
         # View menu's Zoom commands; their tooltips show those commands' keys.
-        self._tool_action(bar, "−", commands.tooltip("zoom_out"), self._zoom_out)
+        self._zoom_buttons.append(
+            (self._tool_action(bar, "−", commands.tooltip("zoom_out"), self._zoom_out), "zoom_out"))
 
         self.zoom_spin = QSpinBox()
         self.zoom_spin.setRange(100 + ZOOM_STEP_MIN * ZOOM_PERCENT_PER_STEP,
@@ -1245,8 +1321,11 @@ class RichEditor(QWidget):
         self.zoom_spin.valueChanged.connect(self._on_zoom_spin_changed)
         bar.addWidget(self.zoom_spin)
 
-        self._tool_action(bar, "+", commands.tooltip("zoom_in"), self._zoom_in)
-        self._tool_action(bar, "⟲", commands.tooltip("zoom_reset"), self._zoom_reset)
+        self._zoom_buttons.append(
+            (self._tool_action(bar, "+", commands.tooltip("zoom_in"), self._zoom_in), "zoom_in"))
+        self._zoom_buttons.append(
+            (self._tool_action(bar, "⟲", commands.tooltip("zoom_reset"), self._zoom_reset),
+             "zoom_reset"))
 
     def _on_zoom_spin_changed(self, percent: int):
         steps = round((percent - 100) / ZOOM_PERCENT_PER_STEP)

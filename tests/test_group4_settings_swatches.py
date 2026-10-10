@@ -150,7 +150,15 @@ for styled in (False, True):
 
     print(f"\n--- [A-F1-2, {how}] ...where the swatches wrap onto more rows ---")
     dlg.show_page("appearance")
+    # 4B/AM-5: the window now opens wide enough for the Hotkeys table, so it
+    # is narrowed explicitly to what the other pages need (the width it
+    # opened at before 4B); there the swatches must wrap.
+    narrow = max(sd_module.PREFERRED_WIDTH,
+                 max(c.minimumSizeHint().width() for p, c in dlg._contents.items() if p != "hotkeys")
+                 + dlg._chrome_width())
+    dlg.resize(narrow, dlg.height())
     settle()
+    print(f"  (narrowed to {narrow} px; measured {dlg.width()} px)")
     content = dlg._contents["appearance"]
     inside = all(content.rect().contains(rect_in(w, content)) for _f, b, c in swatches(dlg) for w in (b, c))
     check(f"{how} 24pt: the five swatches take at least two rows ({len(rows(dlg))}), all within the page",

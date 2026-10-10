@@ -100,8 +100,9 @@ dividers between them:
   `¶↑`/`¶↓` spin boxes next to it set space-before/space-after for the same
   paragraph(s), in points — genuine paragraph spacing, not a fake blank
   line, so it doesn't get confused with (or collapse) a deliberately blank
-  paragraph you've typed. Superscript and subscript are mutually exclusive,
-  like a real word processor's — turning one on turns the other off.
+  paragraph you've typed. Superscript (Ctrl+Shift+=) and subscript
+  (Ctrl+=) are mutually exclusive, like a real word processor's — turning
+  one on turns the other off.
   Increase/Decrease Indent (`→|` / `|←`) work the same way on whichever
   paragraph(s) your selection touches, floored at no indent, so a couple of
   Outdent clicks always gets a paragraph fully back to flush; the text
@@ -114,8 +115,8 @@ dividers between them:
   about to type next. (The starting font for a brand-new entry, before
   you've customized anything, comes from the "Default writing font" in
   Settings — see below.)
-  At the far right, `−` / percentage / `+` (or Ctrl+Scroll, Ctrl+= /
-  Ctrl+- / Ctrl+0) zoom the text in and out temporarily, the way a browser
+  At the far right, `−` / percentage / `+` (or Ctrl+Scroll, View → Zoom
+  In, Ctrl+- / Ctrl+0) zoom the text in and out temporarily, the way a browser
   or PDF viewer does — it's just a bigger/smaller on-screen view, separate
   from the actual writing font/size above, resets each time you reopen the
   app, and is never saved into the entry itself.
@@ -177,6 +178,7 @@ dividers between them:
   does. It has a deliberately reduced toolbar: bold/italic/underline,
   strikethrough, super/subscript, lists and Ctrl+F, but not the journal's
   full paragraph machinery — the journal stays the full writing surface.
+  The alignment keys (Ctrl+Shift+L/E/R/J) work there too, without buttons.
 
   Reader's Notes is a core part of the app, and always was — it shared a
   pane with the removed AI feature but never depended on it, which is why
@@ -480,8 +482,15 @@ width and grows with the application font size.
 There is one settings window, with the pages General, Editor, Hotkeys,
 Calendar, Appearance and Backups; each entry of the Settings menu opens it
 at that page. Every control in it applies the moment you change it — no
-Save button. It scrolls and its text
-wraps, so nothing runs off a small screen at any interface font size.
+Save button — except the Hotkeys page, where you can give any command a
+different key (or none): it checks the whole set first (two commands on one
+key, a key that types text or that the text fields use themselves, Alt plus
+a menu letter, and so on), marks each problem in its row, and applies your
+changes only when you press Apply. Restore All Defaults and each row's
+Default button put the original keys back. Menus, tooltips, Help →
+Keyboard Shortcuts and every editor follow the new keys at once. It scrolls
+and its text wraps, so nothing runs off a small screen at any interface
+font size.
 
 There used to be a second window, `File → Experimental Settings`, holding
 the controls for the optional AI feature. That feature is gone (see the end

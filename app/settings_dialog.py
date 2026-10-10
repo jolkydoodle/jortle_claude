@@ -46,11 +46,11 @@ from PySide6.QtWidgets import (
     QSpinBox, QStackedWidget, QVBoxLayout, QWidget
 )
 
-from . import rich_editor
+from . import commands, rich_editor
 from .calendar_prefs import WORK_HOURS_SETTING
 from .saving import AUTOSAVE_SETTING, autosave_enabled
 from .database import Database
-from .help_dialogs import shortcuts_table
+from .hotkeys_page import HotkeysPage
 from .ui_util import FlowLayout, make_shrinkable_combo
 from .theme import PRESETS, ColorScheme, scheme_from_json, scheme_to_json
 
@@ -142,11 +142,9 @@ class SettingsDialog(QDialog):
         # ---- saving -----------------------------------------------------
         self.autosave_check = QCheckBox("Enable autosave")
         self.autosave_check.setChecked(autosave_enabled(db))
-        self.autosave_check.setToolTip(
-            "With autosave on, your writing is saved a moment after you stop "
-            "typing. With it off, nothing is written until you press Ctrl+S — "
-            "and jortle_claude asks before anything would discard unsaved changes."
-        )
+        self._refresh_save_key_text()
+        # The tooltip names the Save key as now assigned (4B-D5).
+        commands.notifier.changed.connect(self._refresh_save_key_text)
         self.autosave_check.toggled.connect(self._on_autosave_toggled)
 
         # ---- calendar ---------------------------------------------------
@@ -211,9 +209,9 @@ class SettingsDialog(QDialog):
         backup_row.addLayout(backup_text, 1)
         backup_row.addWidget(manage, 0, Qt.AlignTop)
 
-        # Hotkeys: the current shortcuts, read-only, from the command table —
-        # the same list as Help → Keyboard Shortcuts (4A/AM-3).
-        self.hotkeys_table = shortcuts_table()
+        # Hotkeys: the editor of the assigned keys (4B-D4; replaces 4A/AM-3's
+        # read-only list).
+        self.hotkeys_page = HotkeysPage(db)
 
         # The rows are the ones this window always had, each on its page.
         rows = {
@@ -221,7 +219,7 @@ class SettingsDialog(QDialog):
             "editor": [("Default writing font:", self.font_combo),
                        ("Default writing size:", self.size_spin),
                        ("Writing position:", self.writing_position_combo)],
-            "hotkeys": [(None, self.hotkeys_table)],
+            "hotkeys": [(None, self.hotkeys_page)],
             "calendar": [("Calendar:", self.work_hours_check)],
             "appearance": [("Color scheme:", self.scheme_combo),
                            # The swatches on their own full-width row under
@@ -295,6 +293,13 @@ class SettingsDialog(QDialog):
         self.setMinimumSize(MIN_WIDTH, MIN_HEIGHT)
         self.resize(*self._starting_size())
 
+    def _refresh_save_key_text(self):
+        self.autosave_check.setToolTip(
+            "With autosave on, your writing is saved a moment after you stop "
+            f"typing. With it off, nothing is written until you {commands.save_key_phrase()} — "
+            "and jortle_claude asks before anything would discard unsaved changes."
+        )
+
     def show_page(self, key: str):
         """Shows one page: what each Settings menu entry asks for."""
         self.page_list.setCurrentRow(self.PAGES.index(key))
@@ -341,6 +346,12 @@ class SettingsDialog(QDialog):
         # wider or taller window than the one that opened.
         contents = list(self._contents.values())
         needed = max(c.minimumSizeHint().width() for c in contents) + self._chrome_width()
+        # The Hotkeys table counts at its full width (bug 44; 4B/AM-5): the
+        # window opens wide enough to show every column, as far as the screen
+        # allows, and never resizes when the page changes. Beyond the cap
+        # the table scrolls sideways within itself, so the page never forces
+        # a horizontal scrollbar (Part 36).
+        needed = max(needed, self.hotkeys_page.preferred_width() + self._chrome_width())
         width = max(PREFERRED_WIDTH, needed)
         # Height follows the same rule: show the whole page if the screen
         # allows it, and scroll only when it genuinely doesn't fit. Measured

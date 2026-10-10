@@ -344,8 +344,12 @@ for name, editor in list(EDITORS.items()) + [("project", None), ("project Reader
                   horizontal == flag and btn.isChecked() and btn in editor.actions()
                   and btn.toolTip() == commands.tooltip(cmd))
     else:
-        check(f"{name}: compact editor has no alignment controls (bug 12's rest is 4B's, 4A/AM-4)",
-              not hasattr(editor, "align_left_btn"))
+        # Since 4B the compact editors have the alignment keys without the
+        # buttons (bug 12; tests/test_group4_hotkeys.py, CB-8).
+        check(f"{name}: compact editor has no alignment buttons",
+              not hasattr(editor, "align_left_btn")
+              and not [b for b in editor.toolbar.actions()
+                       if b in getattr(editor, "alignment_actions", {}).values()])
 
 # Two editors on screen at once never compete for a key.
 win.main_tabs.setCurrentWidget(win.daily_splitter)
@@ -661,7 +665,7 @@ check("...and on again checks it", A["work_hours"].isChecked())
 print("\n--- [C4A-8] Settings: one window, at the page asked for ---")
 pages = {"general": ["autosave_check"],
          "editor": ["font_combo", "size_spin", "writing_position_combo"],
-         "hotkeys": ["hotkeys_table"],
+         "hotkeys": ["hotkeys_page"],
          "calendar": ["work_hours_check"],
          "appearance": ["scheme_combo", "ui_size_spin"],
          "backups": ["backup_folder", "backup_status"]}
@@ -700,9 +704,19 @@ print("  (bold row in Keyboard Shortcuts:", [r for r in listed if r[0] == "Bold"
 for cmd in ("save", "find", "bold", "zoom_out", "undo"):
     check(f"  ...including {cmd} as {commands.shortcut_text(cmd)}",
           any(r[0] == commands.plain_label(cmd) and commands.shortcut_text(cmd) in r[1] for r in listed))
-check("  ...and the Hotkeys page shows the same list",
-      [tuple(dialogs[-1].hotkeys_table.item(r, c).text() for c in range(3))
-       for r in range(dialogs[-1].hotkeys_table.rowCount())] == listed)
+# Since 4B the Hotkeys page is an editor of every command's key (4B-D4); it
+# shows each listed shortcut in that command's row.
+hotkeys = dialogs[-1].hotkeys_page
+page_rows = {}
+for r in range(hotkeys.table.rowCount()):
+    label = hotkeys.table.item(r, 0).text()
+    editor = hotkeys.table.cellWidget(r, 1)
+    page_rows[label] = (editor.keySequence().toString(QKeySequence.NativeText) if editor is not None
+                        else hotkeys.table.item(r, 1).text(), hotkeys.table.item(r, 3).text())
+check("  ...and the Hotkeys page shows the same shortcuts, in each command's row",
+      all(page_rows.get(label) == (key, where) for label, key, where in listed),
+      [(label, page_rows.get(label)) for label, key, where in listed
+       if page_rows.get(label) != (key, where)])
 guides = []
 original_guide_exec = help_dialogs.RecoveryGuideDialog.exec
 help_dialogs.RecoveryGuideDialog.exec = lambda self: guides.append(self) or 0
