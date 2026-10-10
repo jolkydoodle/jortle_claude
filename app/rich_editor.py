@@ -52,9 +52,9 @@ from typing import Optional
 
 from PySide6.QtCore import QEvent, QPoint, QSize, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import (
-    QAction, QActionGroup, QColor, QDesktopServices, QFont, QImage, QKeySequence, QPixmap,
-    QShortcut, QTextBlockFormat, QTextCharFormat, QTextCursor, QTextDocument,
-    QTextFormat, QTextListFormat
+    QAction, QActionGroup, QColor, QDesktopServices, QFont, QImage, QKeySequence, QPainter,
+    QPalette, QPixmap, QShortcut, QTextBlockFormat, QTextCharFormat, QTextCursor, QTextDocument,
+    QTextDocumentFragment, QTextFormat, QTextListFormat
 )
 from PySide6.QtWidgets import (
     QApplication, QColorDialog, QComboBox, QDialog, QDoubleSpinBox, QFileDialog, QFontComboBox,
@@ -62,7 +62,7 @@ from PySide6.QtWidgets import (
     QSpinBox, QTextEdit, QToolBar, QToolButton, QVBoxLayout, QWidget
 )
 
-from . import commands, date_links
+from . import commands, date_links, rich_paste
 from .paths import get_attachments_dir
 from .saving import document_has_content
 from .ui_util import font_scaled, make_shrinkable_combo
@@ -135,9 +135,14 @@ class RichTextEditor(QTextEdit):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setAcceptRichText(False)  # paste as plain text; formatting comes from our own toolbar
+        # Pasting goes through insertFromMimeData below (rich paste, 4C2b),
+        # not through Qt's own rich-text insertion.
+        self.setAcceptRichText(False)
         self.setMouseTracking(True)
         self._current_relative_dir = ""  # "YYYY/MM" of the date/project currently being edited
+        # Grey text shown while the document holds no characters (§13, 4C2b-D7);
+        # painted over the viewport, never part of the document.
+        self.empty_state_text = ""
         # Set by RichEditor(link_dates=True): written dates navigate on click
         # even before the next save/load has turned them into stored links.
         self.recognise_dates = False
@@ -286,6 +291,29 @@ class RichTextEditor(QTextEdit):
             self._zoom_refresh_pending = True
             QTimer.singleShot(0, self, self._refresh_zoom_for_screen)
         super().paintEvent(event)
+        if self.empty_state_text and self._holds_no_characters():
+            self._paint_empty_state()
+
+    def _holds_no_characters(self) -> bool:
+        """When the empty-state text shows (4C2b-D7, 4C2/AM-24): while the
+        document's text, apart from paragraph breaks, is empty — no letter,
+        space, tab, image or any other character. So it shows on a new
+        entry, on a blank page stored by an older version, and after only
+        Enter has been pressed; one typed character of any kind hides it."""
+        return not self.document().toPlainText().replace("\n", "").replace("\u2029", "")
+
+    def _paint_empty_state(self):
+        """The §13 text, drawn the way Qt draws a placeholder: in the
+        placeholder colour Qt derives from the theme's text colour, inside the
+        document margin, at the widget's own font — on the viewport, so it is
+        never zoomed and never in the document."""
+        painter = QPainter(self.viewport())
+        painter.setPen(self.palette().color(QPalette.PlaceholderText))
+        painter.setFont(self.font())
+        margin = int(self.document().documentMargin())
+        painter.drawText(self.viewport().rect().adjusted(margin, margin, -margin, -margin),
+                         Qt.AlignTop | Qt.TextWordWrap, self.empty_state_text)
+        painter.end()
 
     def _refresh_zoom_for_screen(self):
         self._zoom_refresh_pending = False
@@ -506,12 +534,17 @@ class RichTextEditor(QTextEdit):
             self._apply_writing_position(event)
 
     # ---------------------------------------------------------- image insert
+    def photo_folder(self) -> tuple:
+        """(relative subdir, absolute folder) where photos added to this
+        document are filed: by Insert Photo and by paste (4C2b-D4)."""
+        subdir = self._current_relative_dir or "misc"
+        return subdir, get_attachments_dir() / subdir
+
     def insert_photo(self):
         paths, _ = QFileDialog.getOpenFileNames(self, "Insert Photo(s)", "", IMAGE_FILTER)
         if not paths:
             return
-        subdir = self._current_relative_dir or "misc"
-        dest_dir = get_attachments_dir() / subdir
+        subdir, dest_dir = self.photo_folder()
         dest_dir.mkdir(parents=True, exist_ok=True)
         cursor = self.textCursor()
         if not cursor.atBlockStart():
@@ -532,6 +565,146 @@ class RichTextEditor(QTextEdit):
             self._reset_to_normal_style(cursor)
         self.setTextCursor(cursor)
         self.setFocus()
+
+    # --------------------------------------------------------------- paste
+    # Ctrl+V, Edit → Paste and drag-and-drop all end here (4C2b-D1). The
+    # source order is HTML, then an image alone, then plain text (D2); see
+    # app/rich_paste.py for how HTML is mapped.
+    def createMimeDataFromSelection(self):
+        """Copy (and drag): Qt's own data, with the document's font named in
+        the HTML, so a paste elsewhere shows the text in the font it had
+        here (4C2b-D3)."""
+        mime = super().createMimeDataFromSelection()
+        if mime is not None and mime.hasHtml():
+            mime.setHtml(rich_paste.with_document_font(mime.html(), self.document().defaultFont()))
+        return mime
+
+    def canInsertFromMimeData(self, source) -> bool:
+        return source.hasHtml() or source.hasImage() or source.hasText()
+
+    def insertFromMimeData(self, source):
+        if self.isReadOnly():
+            return
+        if source.hasHtml():
+            images = rich_paste.ImageStore(self.photo_folder)
+            pasted = rich_paste.document_from_html(source.html(), self.document().defaultFont(), images)
+            self._insert_document(pasted)
+        elif source.hasImage():
+            image = source.imageData()
+            if isinstance(image, QPixmap):
+                image = image.toImage()
+            relative = (rich_paste.ImageStore(self.photo_folder).save_image(image)
+                        if isinstance(image, QImage) and not image.isNull() else None)
+            if relative is not None:
+                cursor = self.textCursor()
+                cursor.beginEditBlock()
+                cursor.insertImage(relative)
+                cursor.endEditBlock()
+                self.setTextCursor(cursor)
+        elif source.hasText():
+            self.insert_plain_text(source.text())
+        self.ensureCursorVisible()
+
+    def _insert_document(self, pasted: QTextDocument):
+        """Inserts a pasted document at the caret as one undo step.
+
+        Paragraph merge rule (4C2b-D1): the first and last pasted paragraphs
+        merge into the paragraph pasted into and take its format, list
+        membership included; whole pasted paragraphs keep their own. Qt's
+        insertFragment gives the pasted-into paragraph's tail the format of
+        the last pasted paragraph (a heading, a list item), so both ends are
+        put back.
+
+        Into an EMPTY paragraph there is nothing to merge with (4C2/AM-19):
+        the first and last pasted paragraphs keep their own format and list,
+        as every pasted paragraph does. Qt is not consistent there (it may
+        apply the first paragraph's format or not, and adds an empty
+        paragraph before a paste that starts with a list item), so both ends
+        are set from the pasted document itself."""
+        if pasted.isEmpty():
+            return
+        cursor = self.textCursor()
+        cursor.beginEditBlock()
+        if cursor.hasSelection():
+            cursor.removeSelectedText()
+        target_empty = cursor.block().length() == 1
+        target_format = cursor.blockFormat()
+        target_list = cursor.block().textList()
+        first_block = cursor.blockNumber()
+        cursor.insertFragment(QTextDocumentFragment(pasted))
+        last_block = cursor.blockNumber()
+        document = self.document()
+        if target_empty:
+            if (last_block - first_block + 1 == pasted.blockCount() + 1
+                    and document.findBlockByNumber(first_block).length() == 1
+                    and pasted.begin().length() > 1):
+                extra = QTextCursor(document.findBlockByNumber(first_block))
+                extra.movePosition(QTextCursor.NextBlock, QTextCursor.KeepAnchor)
+                extra.removeSelectedText()
+                last_block -= 1
+            ends = {first_block: pasted.begin(), last_block: pasted.lastBlock()}
+            for number, source in ends.items():
+                self._give_block_format(number, source.blockFormat(),
+                                        self._target_list_for(first_block, source, pasted))
+        else:
+            for number in {first_block, last_block}:
+                self._give_block_format(number, target_format, target_list)
+        cursor.endEditBlock()
+        self.setTextCursor(cursor)
+
+    def _give_block_format(self, number: int, fmt: QTextBlockFormat, text_list):
+        """Paragraph `number` takes `fmt` and belongs to `text_list` (a list
+        of this document, a QTextListFormat for a new list, or None)."""
+        block = self.document().findBlockByNumber(number)
+        if block.textList() is not None:
+            block.textList().remove(block)
+        fmt = QTextBlockFormat(fmt)
+        fmt.clearProperty(QTextFormat.ObjectIndex)    # list membership is set below
+        cursor = QTextCursor(block)
+        cursor.setBlockFormat(fmt)
+        if isinstance(text_list, QTextListFormat):
+            cursor.createList(text_list)
+        elif text_list is not None:
+            text_list.add(cursor.block())
+
+    def _target_list_for(self, first_block: int, source, pasted: QTextDocument):
+        """For an end paragraph of a paste into an empty paragraph: the list
+        of this document it belongs to — the one its pasted neighbours from
+        the same pasted list landed in — or the pasted list's format, for a
+        new list; None outside a list."""
+        source_list = source.textList()
+        if source_list is None:
+            return None
+        other = pasted.begin()
+        number = first_block
+        while other.isValid():
+            if other != source and other.textList() is not None \
+                    and other.textList().formatIndex() == source_list.formatIndex():
+                landed = self.document().findBlockByNumber(number).textList()
+                if landed is not None:
+                    return landed
+            other = other.next()
+            number += 1
+        fmt = QTextListFormat()
+        fmt.setStyle(source_list.format().style())
+        fmt.setIndent(source_list.format().indent())
+        return fmt
+
+    def insert_plain_text(self, text: str):
+        """The clipboard's text, in the caret's character format, as one
+        undo step: the plain-text paste (4C2b-D2) and Paste as Plain Text
+        (Ctrl+Shift+V, 4C2b-D6)."""
+        if self.isReadOnly() or not text:
+            return
+        cursor = self.textCursor()
+        cursor.beginEditBlock()
+        cursor.insertText(text.replace("\r\n", "\n").replace("\r", "\n"))
+        cursor.endEditBlock()
+        self.setTextCursor(cursor)
+        self.ensureCursorVisible()
+
+    def paste_plain(self):
+        self.insert_plain_text(QApplication.clipboard().text())
 
     # ------------------------------------------------------------- linking
     def insert_link(self):
@@ -1077,19 +1250,8 @@ class RichEditor(QWidget):
         # quote) — applied via _each_selected_block() to every paragraph
         # the selection touches, the same pattern indent/outdent already
         # established.
-        self.align_left_btn = self._command_action(bar, "align_left", "⟸",
-                                                   lambda: self._set_alignment(Qt.AlignLeft), checkable=True)
-        self.align_center_btn = self._command_action(bar, "align_center", "⟺",
-                                                     lambda: self._set_alignment(Qt.AlignHCenter), checkable=True)
-        self.align_right_btn = self._command_action(bar, "align_right", "⟹",
-                                                    lambda: self._set_alignment(Qt.AlignRight), checkable=True)
-        self.align_justify_btn = self._command_action(bar, "align_justify", "☰",
-                                                      lambda: self._set_alignment(Qt.AlignJustify), checkable=True)
-        self._alignment_group = QActionGroup(self)
-        self._alignment_group.setExclusive(True)
-        for btn in (self.align_left_btn, self.align_center_btn, self.align_right_btn, self.align_justify_btn):
-            self._alignment_group.addAction(btn)
-
+        # Order (Master Spec §14.1, 4C2b-D8): line spacing and paragraph
+        # spacing, then alignment, then indent, lists and quote, then insert.
         self.line_spacing_combo = QComboBox()
         self.line_spacing_combo.setToolTip("Line spacing (applies to the whole paragraph)")
         for label, _pct in self.LINE_SPACING_PRESETS:
@@ -1106,6 +1268,21 @@ class RichEditor(QWidget):
             "Space after paragraph", self._on_space_after_changed)
         bar.addWidget(QLabel("¶↓"))
         bar.addWidget(self.space_after_spin)
+
+        bar.addSeparator()
+
+        self.align_left_btn = self._command_action(bar, "align_left", "⟸",
+                                                   lambda: self._set_alignment(Qt.AlignLeft), checkable=True)
+        self.align_center_btn = self._command_action(bar, "align_center", "⟺",
+                                                     lambda: self._set_alignment(Qt.AlignHCenter), checkable=True)
+        self.align_right_btn = self._command_action(bar, "align_right", "⟹",
+                                                    lambda: self._set_alignment(Qt.AlignRight), checkable=True)
+        self.align_justify_btn = self._command_action(bar, "align_justify", "☰",
+                                                      lambda: self._set_alignment(Qt.AlignJustify), checkable=True)
+        self._alignment_group = QActionGroup(self)
+        self._alignment_group.setExclusive(True)
+        for btn in (self.align_left_btn, self.align_center_btn, self.align_right_btn, self.align_justify_btn):
+            self._alignment_group.addAction(btn)
 
         bar.addSeparator()
 

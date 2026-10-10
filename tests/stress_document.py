@@ -313,6 +313,16 @@ class Kit:
         finally:
             QFileDialog.getOpenFileNames = original
 
+    def paste_external(self, html: str):
+        """Pastes HTML from 'another application': a Python-built QMimeData
+        handed to the editor's own paste path, never to the clipboard
+        (4C2/AM-5)."""
+        from PySide6.QtCore import QMimeData
+        mime = QMimeData()
+        mime.setHtml(html)
+        self.edit.insertFromMimeData(mime)
+        self.settle()
+
     def combo(self, combo, index: int):
         combo.setCurrentIndex(index)
         self.settle()
@@ -603,6 +613,57 @@ def _links_expect(ctx):
     return props
 
 
+# Rich paste (4C2b): a web-like paste into the middle of a paragraph, and a
+# Jortle → Jortle paste made with the editor's own Copy and Ctrl+V (the
+# offscreen clipboard is the test process's own).
+PASTED_HTML = ('<p style="font-family:Arial; font-size:20px; color:#202124">Pasted <b>pbold</b> '
+               '<span style="color:#c00000">pred</span> <a href="https://example.org/pasted">plink</a></p>'
+               '<h1 style="font-size:2em">Pasted heading</h1><p style="color:#5f6368">ptail</p>')
+
+
+def _pasted_apply(kit, ctx):
+    kit.place(kit.index_of("alpha webpaste omega"), len("alpha "))
+    kit.paste_external(PASTED_HTML)
+    kit.select_words("alpha boldword omega", "boldword")
+    kit.key(Qt.Key_C, Qt.ControlModifier)
+    kit.place(kit.index_of("alpha jortlepaste omega"), len("alpha "))
+    kit.key(Qt.Key_V, Qt.ControlModifier)
+
+
+def _pasted_expect(ctx):
+    bold = lambda w: w >= 600  # noqa: E731
+
+    def typed_font(fp):
+        return next(((r.families, r.size) for r in fp.runs if r.text == "jortlepaste omega"), None)
+
+    def in_typed_font(text, **attrs):
+        """A pasted run in the same font as typed text (4C2/AM-6): read
+        back, both show the document's font, whatever it is."""
+        def test(fp):
+            return any(text in r.text and (r.families, r.size) == typed_font(fp)
+                       and all(getattr(r, k) == v if not callable(v) else v(getattr(r, k))
+                               for k, v in attrs.items()) for r in fp.runs)
+        return test
+
+    def jortle_bold(fp):
+        blocks = [b.index for b in fp.blocks if b.text == "alpha boldword jortlepaste omega"]
+        return any(r.block in blocks and "boldword" in r.text and r.weight >= 600 for r in fp.runs)
+
+    return [Prop("pasted bold, in the document's font", "custom", test=in_typed_font("pbold", weight=bold),
+                 in_archive=False),
+            Prop("pasted grey text keeps no colour, in the document's font", "custom",
+                 test=in_typed_font("Pasted ", fg=None), in_archive=False),
+            Prop("pasted chromatic colour kept", "run", "pred", {"fg": "#c00000"}),
+            Prop("pasted link in Jortle's link style", "run", "plink",
+                 {"href": "https://example.org/pasted", "fg": "#3f8ede", "underline": True}),
+            Prop("pasted h1 is Heading 1", "block", "Pasted heading", {"heading": 1}),
+            Prop("pasted heading text at Jortle's 20 pt, bold", "run", "Pasted heading",
+                 {"size": 20.0, "weight": bold}, in_archive=False),
+            Prop("the pasted-into paragraph's tail keeps its own format", "block", "ptailwebpaste omega",
+                 {"heading": 0, "list_style": None}),
+            Prop("Jortle → Jortle paste keeps the bold", "custom", test=jortle_bold)]
+
+
 def _photo_apply(kit, ctx):
     kit.place(kit.index_of("Photo follows") + 1)
     kit.with_photo(ctx["photo"])
@@ -652,6 +713,7 @@ SECTIONS: list = [
     Section("lists and quote", ["Bullet item one", "Bullet item two", "Number item one", "Number item two",
                                 "Quoted paragraph text"], _lists_apply, _lists_expect),
     Section("links", ["alpha linkword omega", "Dated 2026-02-14 here"], _links_apply, _links_expect),
+    Section("rich paste", ["alpha webpaste omega", "alpha jortlepaste omega"], _pasted_apply, _pasted_expect),
     # Last: inserting a photo adds paragraphs.
     Section("photo", ["Photo follows", "", "Last words", ""], _photo_apply, _photo_expect),
 ]
