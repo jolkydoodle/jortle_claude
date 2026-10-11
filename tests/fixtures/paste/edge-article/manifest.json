@@ -1,0 +1,72 @@
+{
+  "tool": "tests/fixtures/paste/capture.py (4C2b-D9)",
+  "captured_on": "2026-10-10",
+  "platform": "windows",
+  "qt": "6.11.2",
+  "pyside": "6.11.2",
+  "note": "Edge, Wikipedia Iceland article: title through infobox",
+  "has_html": true,
+  "has_text": true,
+  "has_image": false,
+  "has_urls": false,
+  "formats": [
+    {
+      "name": "text/html",
+      "bytes": 120976
+    },
+    {
+      "name": "text/plain",
+      "bytes": 5636
+    },
+    {
+      "name": "application/x-qt-windows-mime;value=\"Chromium internal source RFH token\"",
+      "bytes": 24
+    },
+    {
+      "name": "application/x-qt-windows-mime;value=\"Chromium internal source URL\"",
+      "bytes": 38
+    }
+  ],
+  "saved": [
+    "content.html",
+    "content.txt"
+  ],
+  "local_images": [
+    {
+      "reference": "File:Semi-protection-shackle.svg",
+      "status": "missing"
+    },
+    {
+      "reference": "File:Flag_of_Iceland.svg",
+      "status": "missing"
+    },
+    {
+      "reference": "File:Coat_of_arms_of_Iceland.svg",
+      "status": "missing"
+    },
+    {
+      "reference": "File:Lofs%C3%B6ngur.ogg",
+      "status": "not an image (not copied)"
+    },
+    {
+      "reference": "File:Island_(orthographic_projection).svg",
+      "status": "missing"
+    },
+    {
+      "reference": "File:Increase_Neutral.svg",
+      "status": "missing"
+    },
+    {
+      "reference": "File:Increase2.svg",
+      "status": "missing"
+    },
+    {
+      "reference": "File:Decrease_Positive.svg",
+      "status": "missing"
+    }
+  ],
+  "word_property_blocks_removed": 0,
+  "profile_path_replaced": 0,
+  "user_name_replaced_in_paths": 0,
+  "user_name_left_elsewhere": 8
+}

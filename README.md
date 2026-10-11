@@ -91,14 +91,15 @@ dividers between them:
 
   The toolbar is organized in two groups, left to right: **Font** (family,
   size, heading, Bold/Italic/Underline/Strikethrough/Superscript/
-  Subscript, text color) and **Paragraph** (alignment, line spacing,
-  spacing before/after, indent/outdent, bullet/numbered lists, blockquote)
-  — followed by Insert (link, photo, find) and Zoom at the far right.
-  Alignment (`⟸`/`⟺`/`⟹`/`☰` — Left/Center/Right/Justify, also
-  Ctrl+Shift+L/E/R/J) and line spacing (a dropdown: Single/1.15/1.5/Double)
+  Subscript, text color) and **Paragraph** (line spacing, spacing
+  before/after, then alignment, then indent/outdent, bullet/numbered lists,
+  blockquote, then link and photo), with Zoom at the far right of the first
+  row.
+  Line spacing (a dropdown: Single/1.15/1.5/Double) and alignment
+  (`⟸`/`⟺`/`⟹`/`☰` — Left/Center/Right/Justify, also Ctrl+Shift+L/E/R/J)
   apply to whichever paragraph(s) your selection touches; the two small
-  `¶↑`/`¶↓` spin boxes next to it set space-before/space-after for the same
-  paragraph(s), in points — genuine paragraph spacing, not a fake blank
+  `¶↑`/`¶↓` spin boxes next to line spacing set space-before/space-after for the same
+  paragraph(s), in pixels (px) — genuine paragraph spacing, not a fake blank
   line, so it doesn't get confused with (or collapse) a deliberately blank
   paragraph you've typed. Superscript (Ctrl+Shift+=) and subscript
   (Ctrl+=) are mutually exclusive, like a real word processor's — turning
@@ -123,6 +124,22 @@ dividers between them:
   the entry as changed. Each editor (the journal, a project, and the two
   Reader's Notes) remembers its own zoom between runs, and changing a setting
   no longer resets it.
+
+  **Paste keeps formatting.** Text copied within the app pastes exactly as
+  it looked, font included. Text from a web page, Word or another program
+  keeps bold, italic, underline, strikethrough, superscript/subscript,
+  alignment, headings (as Heading 1–3), lists, links, and colours and
+  highlights that are actual colours; it takes the entry's own font and
+  size, and greys, black and white are dropped so the text reads in every
+  theme. Tables become one line per row with tabs between the cells. A
+  pasted picture is saved into your photos folder like an inserted one; a
+  picture that lives on the web is never downloaded — it becomes a link
+  "[image: …]" to it instead. **Ctrl+Shift+V (Edit → Paste as Plain Text)**
+  pastes just the text, in the formatting at the cursor.
+
+  An empty Daily Jorts page shows a short grey note about how the journal
+  treats past entries; it is only a hint on screen, gone as soon as you
+  type, and never saved, searched or exported.
 
   **Ctrl+F (Edit → Find) finds text in the editor you are using**:
   a small bar drops in above the writing area with a match count, Prev/Next

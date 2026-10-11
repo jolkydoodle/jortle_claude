@@ -217,7 +217,8 @@ expected = {
     "File": ["Save", "History…", "Recovery…", "Back Up Now", "Export Backup…",
              "Restore from Backup…", "Backups & Security…", "Export Readable Archive (HTML)…",
              "Open Data Folder", "Data Usage…", "Find Unused Photos…", "Quit"],
-    "Edit": ["Undo", "Redo", "Cut", "Copy", "Paste", "Select All", "Find…"],
+    # Since 4C2b (4C2b-D6) Paste as Plain Text follows Paste.
+    "Edit": ["Undo", "Redo", "Cut", "Copy", "Paste", "Paste as Plain Text", "Select All", "Find…"],
     # Since 4A2 (4A2-D5) View ends with the Core Features submenu.
     "View": ["Zoom In", "Zoom Out", "Reset Zoom", "Calendar Zoom In", "Calendar Zoom Out",
              "Reset Calendar Zoom", "Highlight Work Hours", "Core Features"],

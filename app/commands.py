@@ -92,6 +92,10 @@ COMMANDS: tuple[Command, ...] = (
             assignable=False),
     Command("paste", "&Paste", "Paste at the cursor", QKeySequence.Paste, where=IN_TEXT,
             assignable=False),
+    # 4C2b-D6: the clipboard's text without its formatting, in the format at
+    # the caret; in a text field, an ordinary paste.
+    Command("paste_plain", "Paste as P&lain Text", "Paste the clipboard's text without its formatting",
+            "Ctrl+Shift+V", where=IN_TEXT),
     Command("select_all", "Select &All", "Select all of the text", QKeySequence.SelectAll,
             where=IN_TEXT, assignable=False),
     Command("find", "&Find…", "Find in the text you are editing (or in this workspace's editor)",

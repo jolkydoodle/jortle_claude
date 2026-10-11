@@ -1,0 +1,77 @@
+{
+  "tool": "tests/fixtures/paste/capture.py (4C2b-D9)",
+  "captured_on": "2026-10-10",
+  "platform": "windows",
+  "qt": "6.11.2",
+  "pyside": "6.11.2",
+  "note": "Word, new doc: Heading 1, red text, highlight, link, bullets with sub-item, numbered list, 2x2 table, stock image",
+  "has_html": true,
+  "has_text": true,
+  "has_image": false,
+  "has_urls": false,
+  "formats": [
+    {
+      "name": "application/x-qt-windows-mime;value=\"Object Descriptor\"",
+      "bytes": 120
+    },
+    {
+      "name": "application/x-qt-windows-mime;value=\"Rich Text Format\"",
+      "bytes": 17311446
+    },
+    {
+      "name": "text/html",
+      "bytes": 75874
+    },
+    {
+      "name": "text/plain",
+      "bytes": 153
+    },
+    {
+      "name": "application/x-qt-windows-mime;value=\"Embed Source\"",
+      "bytes": 137194
+    },
+    {
+      "name": "application/x-qt-windows-mime;value=\"Link Source\"",
+      "bytes": 132
+    },
+    {
+      "name": "application/x-qt-windows-mime;value=\"Link Source Descriptor\"",
+      "bytes": 140
+    },
+    {
+      "name": "application/x-qt-windows-mime;value=\"ObjectLink\"",
+      "bytes": 37
+    }
+  ],
+  "saved": [
+    "content.html",
+    "content.txt"
+  ],
+  "local_images": [
+    {
+      "reference": "file:///C:/Users/user/AppData/Local/Temp/msohtmlclip1/01/clip_filelist.xml",
+      "status": "not an image (not copied)"
+    },
+    {
+      "reference": "file:///C:/Users/user/AppData/Local/Temp/msohtmlclip1/01/clip_editdata.mso",
+      "status": "not an image (not copied)"
+    },
+    {
+      "reference": "file:///C:/Users/user/AppData/Local/Temp/msohtmlclip1/01/clip_themedata.thmx",
+      "status": "not an image (not copied)"
+    },
+    {
+      "reference": "file:///C:/Users/user/AppData/Local/Temp/msohtmlclip1/01/clip_colorschememapping.xml",
+      "status": "not an image (not copied)"
+    },
+    {
+      "reference": "file:///C:/Users/user/AppData/Local/Temp/msohtmlclip1/01/clip_image001.jpg",
+      "status": "copied",
+      "file": "files/clip_image001.jpg"
+    }
+  ],
+  "word_property_blocks_removed": 0,
+  "profile_path_replaced": 0,
+  "user_name_replaced_in_paths": 5,
+  "user_name_left_elsewhere": 0
+}

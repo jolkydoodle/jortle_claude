@@ -41,7 +41,8 @@ from .history_dialogs import EntryHistoryDialog, RecoveryDialog
 from .paths import DISPLAY_NAME, dir_size_bytes, get_data_dir, human_size
 from .projects_widget import ProjectsWidget
 from .reader_notes_widget import ReaderNotesWidget
-from .rich_editor import RichEditor, ZOOM_PERCENT_PER_STEP, ZOOM_STEP_MAX, ZOOM_STEP_MIN
+from .rich_editor import (RichEditor, RichTextEditor, ZOOM_PERCENT_PER_STEP, ZOOM_STEP_MAX,
+                          ZOOM_STEP_MIN)
 from .saving import (
     CANCEL, SAVE, ask_unsaved, autosave_enabled, document_has_content,
     ensure_autosave_default, set_autosave_enabled
@@ -59,6 +60,11 @@ AUTOSAVE_INTERVAL_MS = 1200
 # MainWindow._writing_editors(): journal, date notes, project, project notes.
 EDITOR_ZOOM_SETTINGS = ("editor_zoom_journal", "editor_zoom_date_notes",
                         "editor_zoom_project", "editor_zoom_project_notes")
+# Master Spec §13: the Daily Jorts editor's grey text while an entry is empty.
+DAILY_JORTS_EMPTY_STATE = (
+    f"{DISPLAY_NAME} treats journal entries as individual historical records. Existing entries "
+    f"can always be edited individually, but {DISPLAY_NAME} intentionally does not provide batch "
+    "tools for rewriting or reformatting large portions of journal history.")
 # How often an automatic backup is checked for while the app is open, and how
 # soon after a save the unencrypted copy (when one is kept) is brought up to date.
 BACKUP_CHECK_INTERVAL_MS = 60 * 60 * 1000
@@ -213,6 +219,9 @@ class MainWindow(QMainWindow):
         self.back_button.clicked.connect(self._go_back)
 
         self.editor = RichEditor(link_dates=True)
+        # Master Spec §13 (4C2b-D7): shown while the entry holds no
+        # characters; painted, never part of the document.
+        self.editor.text_edit.empty_state_text = DAILY_JORTS_EMPTY_STATE
         self.editor.textChanged.connect(self._schedule_autosave)
         self.editor.dateLinkActivated.connect(self._on_date_link_activated)
 
@@ -374,8 +383,10 @@ class MainWindow(QMainWindow):
         edit_menu = bar.addMenu("&Edit")
         for command_id, slot in (("undo", "undo"), ("redo", "redo"), (None, None),
                                  ("cut", "cut"), ("copy", "copy"), ("paste", "paste"),
-                                 (None, None), ("select_all", "selectAll")):
-            if command_id is None:
+                                 ("paste_plain", None), (None, None), ("select_all", "selectAll")):
+            if command_id == "paste_plain":
+                edit_menu.addAction(act(command_id, self._paste_plain))
+            elif command_id is None:
                 edit_menu.addSeparator()
             else:
                 edit_menu.addAction(act(command_id, lambda s=slot: self._edit_focused_text(s)))
@@ -489,6 +500,18 @@ class MainWindow(QMainWindow):
         if target is not None:
             getattr(target, slot)()
 
+    def _paste_plain(self):
+        """Edit → Paste as Plain Text (Ctrl+Shift+V, 4C2b-D6): a writing
+        editor inserts the clipboard's text in the caret's format; any other
+        text widget pastes as it always does (its paste is plain already)."""
+        target = self._focused_text()
+        if target is None or target.isReadOnly():
+            return
+        if isinstance(target, RichTextEditor):
+            target.paste_plain()
+        else:
+            target.paste()
+
     def _find(self):
         editor = self._command_editor()
         if editor is not None:
@@ -554,6 +577,7 @@ class MainWindow(QMainWindow):
         actions["cut"].setEnabled(has_selection and not read_only)
         actions["copy"].setEnabled(has_selection)
         actions["paste"].setEnabled(target is not None and not read_only)
+        actions["paste_plain"].setEnabled(target is not None and not read_only)
         actions["select_all"].setEnabled(target is not None)
         has_editor = self._command_editor() is not None
         for command_id in ("find", "zoom_in", "zoom_out", "zoom_reset"):
